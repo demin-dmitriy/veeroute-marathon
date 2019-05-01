@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import sys
+
+from argparse import ArgumentParser
 from random import randint, choice
 
 # See https://codeforces.com/contest/1160/problem/A1 on how tests are generated.
@@ -29,8 +32,21 @@ def rand_point(locations):
 			return p
 
 
-def main():
-	n = randint(500, 2000)
+def parse_args(argv):
+	parser = ArgumentParser()
+	parser.add_argument('--n', required=False)
+	return parser.parse_args(argv)
+
+
+def main(argv):
+	args = parse_args(argv)
+
+	if args.n is None:
+		n = randint(500, 2000)
+	else:
+		n = int(args.n)
+		assert n > 0
+
 	print(n)
 
 	locations = set()
@@ -51,4 +67,4 @@ def main():
 
 
 if __name__ == '__main__':
-	main()
+	main(sys.argv[1:])
