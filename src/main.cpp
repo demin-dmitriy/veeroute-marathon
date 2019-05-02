@@ -112,15 +112,14 @@ struct Vertex
     int earliest_work_start_moment;
     const Location* const location;
     Vertex* const twin;
-    // TODO: does this micro optimization even matter?
-    // Last `edge.to` is always nullptr.
-    std::array<Edge, MAX_WORKERS_REQUIRED + 1> edges;
+    std::vector<Edge> edges;
 
     explicit Vertex(Vertex* twin, const Location* location)
         : location(location)
         , twin(twin)
-        , edges()
-    { }
+    {
+        edges.reserve(location->workers_required);
+    }
 };
 
 struct FullVertex
@@ -136,11 +135,19 @@ struct FullVertex
 
 struct Graph
 {
+    enum : size_t
+    {
+        BACKWARD_BASE = 0,
+        FORWARD_BASE = 1
+    };
+
     std::vector<FullVertex> vertices;
 
     explicit Graph(const Task& task)
     {
-        vertices.reserve(task.n);
+        vertices.reserve(task.n + 1);
+        vertices.emplace_back(&task.locations[0]);
+
         for (const Location& location : task.locations)
         {
             vertices.emplace_back(&location);
@@ -157,6 +164,8 @@ struct Processor
         : task(input)
         , graph(task)
     { }
+
+
 };
 
 int main(int argc, char** argv)
