@@ -3,7 +3,7 @@
     #define NDEBUG
 #endif
 
-
+#include <array>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -12,6 +12,25 @@
 #include <ctime>
 #include <cassert>
 
+constexpr size_t MAX_WORKERS_REQUIRED = 7;
+constexpr size_t MAX_LOCATION_COUNT = 2000;
+constexpr double TIME_LIMIT_SECONDS = 15;
+
+struct Timer
+{
+    clock_t start_time;
+
+    Timer()
+            : start_time(clock())
+    { }
+
+    double seconds_elapsed() const
+    {
+        return double(clock() - start_time) / CLOCKS_PER_SEC;
+    }
+};
+
+const Timer timer;
 
 struct Vector
 {
@@ -48,7 +67,7 @@ struct Location
 {
     Vector point;
     int duration;
-    int p;
+    int workers_required;
     TimeWindow time_window;
 
     static Location read(std::istream& in)
@@ -57,7 +76,7 @@ struct Location
         in >> result.point.x
            >> result.point.y
            >> result.duration
-           >> result.p
+           >> result.workers_required
            >> result.time_window.from
            >> result.time_window.to;
         return result;
@@ -69,10 +88,8 @@ struct Task
     int n;
     std::vector<Location> locations;
 
-    void read(std::istream& in)
+    explicit Task(std::istream& in)
     {
-        assert(locations.empty());
-
         in >> n;
         locations.reserve(n);
         for (int i = 0; i != n; ++i)
@@ -82,25 +99,65 @@ struct Task
     }
 };
 
-struct Timer
+struct Vertex;
+
+struct Edge
 {
-    clock_t start_time;
+    Vertex* to;
+    int earliest_arrive_moment;
+};
 
-    Timer()
-        : start_time(clock())
+struct Vertex
+{
+    int earliest_work_start_moment;
+    const Location* const location;
+    Vertex* const twin;
+    // TODO: does this micro optimization even matter?
+    // Last `edge.to` is always nullptr.
+    std::array<Edge, MAX_WORKERS_REQUIRED + 1> edges;
+
+    explicit Vertex(Vertex* twin, const Location* location)
+        : location(location)
+        , twin(twin)
+        , edges()
     { }
+};
 
-    double seconds_elapsed() const
+struct FullVertex
+{
+    Vertex forward;
+    Vertex backward;
+
+    explicit FullVertex(const Location* location)
+        : forward(&backward, location)
+        , backward(&forward, location)
+    { }
+};
+
+struct Graph
+{
+    std::vector<FullVertex> vertices;
+
+    explicit Graph(const Task& task)
     {
-        return double(clock() - start_time) / CLOCKS_PER_SEC;
+        vertices.reserve(task.n);
+        for (const Location& location : task.locations)
+        {
+            vertices.emplace_back(&location);
+        }
     }
 };
 
+struct Processor
+{
+    Task task;
+    Graph graph;
 
-
-Task task;
-const Timer timer;
-constexpr double TIME_LIMIT_SECONDS = 15;
+    explicit Processor(std::istream& input)
+        : task(input)
+        , graph(task)
+    { }
+};
 
 int main(int argc, char** argv)
 {
@@ -109,13 +166,15 @@ int main(int argc, char** argv)
 
     #ifdef READ_TASK_FROM_FILE
         assert(argc == 2);
-        {
-            std::ifstream input(argv[1]);
-            task.read(input);
-        }
+        std::ifstream input(argv[1]);
     #else
-        task.read(std::cin);
+        std::ifstream& input = std::cin;
     #endif
 
-    std::cerr << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds.\n";
+    Processor processor(input);
+
+
+    #ifndef ONLINE_JUDGE
+        std::cerr << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds.\n";
+    #endif
 }
