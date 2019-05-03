@@ -13,6 +13,7 @@
 #include <cassert>
 
 using Moment = int;
+using Index = size_t;
 
 constexpr size_t MAX_WORKERS_REQUIRED = 7;
 constexpr size_t MAX_LOCATION_COUNT = 2000;
@@ -112,9 +113,9 @@ struct Location
     int duration;
     int workers_required;
     TimeWindow time_window;
-    int index;
+    Index index;
 
-    static Location read(std::istream& in, int index)
+    static Location read(std::istream& in, Index index)
     {
         Location result;
         in >> result.point.x
@@ -145,7 +146,7 @@ struct FullLocation
     Location forward;
     Location backward;
 
-    static FullLocation read(std::istream& in, int index)
+    static FullLocation read(std::istream& in, Index index)
     {
         FullLocation result;
 
@@ -163,14 +164,16 @@ int distance(const Location& a, const Location& b)
 
 struct Task
 {
-    int n;
+    size_t n;
     std::vector<FullLocation> locations;
 
     explicit Task(std::istream& in)
     {
         in >> n;
+        assert(n > 0);
         locations.reserve(n);
-        for (int i = 0; i != n; ++i)
+
+        for (size_t i = 0; i != n; ++i)
         {
             locations.emplace_back(FullLocation::read(in, i + 1));
         }
@@ -305,7 +308,7 @@ struct FullVertex
 
 struct Graph
 {
-    enum : size_t
+    enum : Index
     {
         BACKWARD_BASE = 0,
         FORWARD_BASE = 1
@@ -336,7 +339,7 @@ std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
     const auto update_edge = [&last_arrive_moments](const Vertex& from, const Edge& edge, Moment ready_moment)
     {
         const Moment arrive_moment = ready_moment + distance(from, *edge.to);
-        const size_t to_index = edge.to->location->index;
+        const Index to_index = edge.to->location->index;
         last_arrive_moments[to_index] = std::max(last_arrive_moments[to_index], arrive_moment);
     };
 
@@ -388,7 +391,7 @@ std::ostream& operator<<(std::ostream& output, Graph& graph)
 
         while (true)
         {
-            const size_t index = current_vertex->location->index;
+            const Index index = current_vertex->location->index;
 
             output << "arrive " << current_moment << " " << index << "\n";
 
