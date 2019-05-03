@@ -187,12 +187,13 @@ struct Edge
 };
 
 struct FullVertex;
+int distance(const Vertex& a, const Vertex& b);
 
 struct Vertex
 {
     using Version = unsigned int; // Won't overflow in 15 seconds. Could overflow, if it were running longer.
 
-    static CheapStack<Vertex*, 2 * (MAX_LOCATION_COUNT + 1)> marked; // Store both forward and backward vertices
+    static inline CheapStack<Vertex*, 2 * (MAX_LOCATION_COUNT + 1)> marked; // Store both forward and backward vertices
     static inline Version current_global_version = 1;
 
     Moment earliest_work_start_moment; // TODO: maybe end_moment is more convenient to work with
@@ -203,7 +204,8 @@ struct Vertex
     std::vector<Edge> edges;
 
     explicit Vertex(FullVertex* parent, Vertex* twin, const Location* location)
-        : version(0)
+        : earliest_work_start_moment(-1)
+        , version(0)
         , location(location)
         , parent(parent)
         , twin(twin)
@@ -247,7 +249,8 @@ struct Vertex
 
         for (Edge& edge : edges)
         {
-            edge.earliest_arrive_moment = earliest_work_end_moment + distance(*location, *edge.to->location);
+            // TODO: this computation might be needed when new edge is added
+            edge.earliest_arrive_moment = earliest_work_end_moment + distance(*this, *edge.to);
         }
     }
 
@@ -255,10 +258,16 @@ struct Vertex
     {
         while (marked.size != 0)
         {
+            // TODO: early stopping ... but how exactly?
             marked.pop()->recalculate();
         }
     }
 };
+
+int distance(const Vertex& a, const Vertex& b)
+{
+    return distance(*a.location, *b.location);
+}
 
 struct FullVertex
 {
@@ -302,9 +311,11 @@ struct Graph
         FORWARD_BASE = 1
     };
 
+    const Task& task;
     std::vector<FullVertex> vertices;
 
     explicit Graph(const Task& task)
+        : task(task)
     {
         vertices.reserve(task.n + 1);
         vertices.emplace_back(&task.locations[0]);
@@ -316,10 +327,95 @@ struct Graph
     }
 };
 
-std::ostream& operator<<(std::ostream& output, const Graph& graph)
+std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
 {
-    
-    // TODO
+    assert(0 == Vertex::marked.size);
+
+    std::vector<Moment> last_arrive_moments(graph.task.n + 1, -1);
+
+    const auto update_edge = [&last_arrive_moments](const Vertex& from, const Edge& edge, Moment ready_moment)
+    {
+        const Moment arrive_moment = ready_moment + distance(from, *edge.to);
+        const size_t to_index = edge.to->location->index;
+        last_arrive_moments[to_index] = std::max(last_arrive_moments[to_index], arrive_moment);
+    };
+
+    Vertex& base = graph.vertices[Graph::FORWARD_BASE].forward;
+    base.mark();
+
+    // Base is special
+
+    Vertex::marked.pop(); // Discard base
+    for (const Edge& edge : base.edges)
+    {
+        update_edge(base, edge, twin_moment(edge.twin->earliest_arrive_moment));
+    }
+
+    // Note: we are skipping base here, hence -1.
+    while (Vertex::marked.size != 0)
+    {
+        const Vertex& from = *Vertex::marked.pop();
+        const Moment work_start_moment = last_arrive_moments[from.location->index];
+        assert(work_start_moment != -1);
+        const Moment work_end_moment = work_start_moment + from.location->duration;
+
+        for (const Edge& edge : from.edges)
+        {
+            update_edge(from, edge, work_end_moment);
+        }
+    }
+
+    Vertex::unmark_all();
+
+    return last_arrive_moments;
+}
+
+std::ostream& operator<<(std::ostream& output, Graph& graph)
+{
+    std::vector<Moment> last_arrive_moment = calculate_true_last_arrive_moments(graph);
+    std::vector<int> visit_count(graph.task.n + 1, 0);
+
+    const Vertex* const base = &graph.vertices[Graph::FORWARD_BASE].forward;
+    const Vertex* const backward_base = &graph.vertices[Graph::BACKWARD_BASE].forward;
+
+    for (const Edge& first_edge: base->edges)
+    {
+        Moment current_moment = twin_moment(first_edge.twin->earliest_arrive_moment);
+        output << "start " << current_moment << " 1\n";
+
+        const Vertex* current_vertex = first_edge.to;
+        current_moment += distance(*base, *first_edge.to);
+
+        while (true)
+        {
+            const size_t index = current_vertex->location->index;
+
+            output << "arrive " << current_moment << " " << index << "\n";
+
+            if (current_vertex != backward_base)
+            {
+                break;
+            }
+
+            const Moment start_work_moment = last_arrive_moment[index];
+            const Moment end_work_moment = start_work_moment + current_vertex->location->duration;
+
+            assert(current_moment <= start_work_moment);
+
+            output << "work " << start_work_moment << " " << end_work_moment << " " << index << "\n";
+
+            const Vertex* const next_vertex = current_vertex->edges[visit_count[index]].to;
+
+            current_moment = end_work_moment + distance(*current_vertex, *next_vertex);
+
+            visit_count[index] += 1;
+            current_vertex = next_vertex;
+        }
+
+        output << "end\n";
+    }
+
+    return output;
 }
 
 struct Processor
