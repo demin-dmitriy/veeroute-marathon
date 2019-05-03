@@ -373,7 +373,7 @@ std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
 std::ostream& operator<<(std::ostream& output, Graph& graph)
 {
     std::vector<Moment> last_arrive_moment = calculate_true_last_arrive_moments(graph);
-    std::vector<int> visit_count(graph.task.n + 1, 0);
+    std::vector<size_t> visit_count(graph.task.n + 1, 0);
 
     const Vertex* const base = &graph.vertices[Graph::FORWARD_BASE].forward;
     const Vertex* const backward_base = &graph.vertices[Graph::BACKWARD_BASE].forward;
@@ -404,6 +404,8 @@ std::ostream& operator<<(std::ostream& output, Graph& graph)
 
             output << "work " << start_work_moment << " " << end_work_moment << " " << index << "\n";
 
+            assert(visit_count[index] < current_vertex->edges.size());
+
             const Vertex* const next_vertex = current_vertex->edges[visit_count[index]].to;
 
             current_moment = end_work_moment + distance(*current_vertex, *next_vertex);
@@ -427,8 +429,6 @@ struct Processor
         : task(input)
         , graph(task)
     { }
-
-
 };
 
 int main(int argc, char** argv)
