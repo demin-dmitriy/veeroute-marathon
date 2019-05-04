@@ -372,15 +372,20 @@ inline namespace graph
             marked.clear();
         }
 
-        void mark()
+        bool is_marked() const
         {
-            if (version != current_global_version)
+            return version == current_global_version;
+        }
+
+        void mark_recursively()
+        {
+            if (not is_marked())
             {
                 version = current_global_version;
 
                 for (const Edge& edge : edges)
                 {
-                    edge.to->mark();
+                    edge.to->mark_recursively();
                 }
 
                 marked.push(this);
@@ -476,8 +481,8 @@ inline namespace graph
 
         void mark()
         {
-            forward.mark();
-            backward.mark();
+            forward.mark_recursively();
+            backward.mark_recursively();
         }
 
         void recalculate()
@@ -562,7 +567,7 @@ inline namespace graph
         };
 
         Vertex& base = graph.vertices[Graph::FORWARD_BASE].forward;
-        base.mark();
+        base.mark_recursively();
 
         // Base is special
 
