@@ -3,6 +3,7 @@
     #define NDEBUG
 #endif
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <iomanip>
@@ -64,6 +65,24 @@ inline namespace lib
     {
         return xs.data() <= x and x < xs.data() + xs.size();
     }
+
+    template <class T>
+    struct Span
+    {
+        T* data;
+        size_t size;
+
+        template <class Container>
+        explicit Span(Container& container)
+            : data(container.data())
+            , size(container.size())
+        { }
+
+        T* begin() { return data; }
+        T* end() { return data + size; }
+        const T* begin() const { return data; }
+        const T* end() const { return data + size; }
+    };
 
     template <class Value>
     struct Table
@@ -241,9 +260,23 @@ inline namespace task
             };
         }
 
-        bool is_valid() const
+        bool is_empty() const
         {
-            return from <= to;
+            return from >= to;
+        }
+
+        int length() const
+        {
+            return to - from;
+        }
+
+        TimeWindow intersect(TimeWindow other) const
+        {
+            return TimeWindow
+            {
+                .from = std::max(from, other.from),
+                .to = std::min(to, other.to)
+            };
         }
     };
 
@@ -294,7 +327,7 @@ inline namespace task
         bool is_valid() const
         {
             // NOTE: incomplete implementation until more sanity checks are needed.
-            return time_window.is_valid();
+            return not time_window.is_empty() or is_base();
         }
     };
 
@@ -317,9 +350,9 @@ inline namespace task
         }
     };
 
-    int distance(const Location& a, const Location& b)
+    int distance(const Location* a, const Location* b)
     {
-        return distance(a.point, b.point);
+        return distance(a->point, b->point);
     }
 
     struct Task
@@ -420,6 +453,11 @@ inline namespace graph
             }
         }
 
+        Moment get_earliest_work_end_moment() const
+        {
+            return earliest_work_start_moment + location->duration;
+        }
+
         void recalculate()
         {
             earliest_work_start_moment = location->time_window.from;
@@ -429,7 +467,7 @@ inline namespace graph
                 earliest_work_start_moment = std::max(earliest_work_start_moment, twin_edge.twin->earliest_arrive_moment);
             }
 
-            Moment earliest_work_end_moment = earliest_work_start_moment + location->duration;
+            const Moment earliest_work_end_moment = get_earliest_work_end_moment();
 
             assert(earliest_work_end_moment <= location->time_window.to);
 
@@ -451,108 +489,9 @@ inline namespace graph
         }
     };
 
-    Edge* link(Vertex* a, Vertex* b)
-    {
-        const auto add_edge = [](Vertex* v) -> Edge*
-        {
-            assert(v->edges.size() < v->edges.capacity());
-            v->edges.emplace_back();
-            return &v->edges.back();
-        };
-
-        Edge* ab = add_edge(a);
-        Edge* ba = add_edge(b->twin);
-
-        ab->to = b;
-        ab->twin = ba;
-
-        ba->to = a->twin;
-        ba->twin = ab;
-
-        return ab;
-    }
-
-    void unlink(Edge* ab)
-    {
-        const auto remove_edge = [](Vertex* vertex, Edge* edge)
-        {
-            assert(contains_ptr(vertex->edges, edge));
-            const size_t i = edge - vertex->edges.data();
-            vertex->edges[i] = vertex->edges.back();
-            vertex->edges.pop_back();
-        };
-
-        Edge* ba = ab->twin;
-
-        remove_edge(ba->to->twin, ab);
-        remove_edge(ab->to->twin, ba);
-
-        ab->twin = ba;
-        ba->twin = ab;
-    }
-
-    void interpose(Edge* ab, Vertex* v)
-    {
-        Vertex* a = ab->twin->to;
-        Vertex* b = ab->to;
-
-        unlink(ab);
-        link(a, v);
-        link(v, b);
-    }
-
-    void cut(Vertex* v)
-    {
-        // TODO: solving assignment problem, and getting vector of all immediate children can be useful on its own.
-        assert(v->edges.size() == v->twin->edges.size());
-
-        const size_t m = v->edges.size();
-
-        std::vector<Vertex*> froms;
-        std::vector<Vertex*> tos;
-
-        froms.reserve(m);
-        tos.reserve(m);
-
-        for (const Edge& edge : v->edges)
-        {
-            tos.emplace_back(edge.to);
-        }
-
-        for (const Edge& edge : v->twin->edges)
-        {
-            froms.emplace_back(edge.to->twin);
-        }
-
-        Table<int> distances(m, m);
-
-        for (size_t i = 0; i != m; ++i)
-        {
-            for (size_t j = 0; j != m; ++j)
-            {
-                distances.at(i, j) = distance(froms[i], tos[j]);
-            }
-        }
-
-        std::vector<size_t> assignment = solve_assignment_problem(distances);
-
-        for (Vertex* u : { v, v->twin })
-        {
-            for (Edge& edge : u->edges)
-            {
-                unlink(&edge);
-            }
-        }
-
-        for (size_t i = 1; i <= m; ++i)
-        {
-            link(froms[assignment[i] - 1], tos[i - 1]);
-        }
-    }
-
     int distance(const Vertex* a, const Vertex* b)
     {
-        return distance(*a->location, *b->location);
+        return distance(a->location, b->location);
     }
 
     struct FullVertex
@@ -609,8 +548,30 @@ inline namespace graph
 
         Graph(Graph&&) = default;
 
+        Vertex* forward_start()
+        {
+            return &vertices[FORWARD_BASE].forward;
+        }
+
+        Vertex* forward_finish()
+        {
+            return &vertices[BACKWARD_BASE].forward;
+        }
+
+        Vertex* backward_start()
+        {
+            return &vertices[BACKWARD_BASE].backward;
+        }
+
+        Vertex* backward_finish()
+        {
+            return &vertices[FORWARD_BASE].backward;
+        }
+
         Graph copy() const
         {
+            Edge* link(Vertex*, Vertex*);
+
             Graph result(this->task);
 
             // Ugly, but whatever.
@@ -652,7 +613,7 @@ inline namespace graph
             last_arrive_moments[to_index] = std::max(last_arrive_moments[to_index], arrive_moment);
         };
 
-        Vertex* base = &graph.vertices[Graph::FORWARD_BASE].forward;
+        Vertex* base = graph.forward_start();
         base->mark_recursively();
 
         // Base is special
@@ -687,16 +648,16 @@ inline namespace graph
         std::vector<Moment> last_arrive_moment = calculate_true_last_arrive_moments(graph);
         std::vector<size_t> visit_count(graph.task->n + 1, 0);
 
-        const Vertex* const base = &graph.vertices[Graph::FORWARD_BASE].forward;
-        const Vertex* const backward_base = &graph.vertices[Graph::BACKWARD_BASE].forward;
+        const Vertex* const start = graph.forward_start();
+        const Vertex* const finish = graph.forward_finish();
 
-        for (const Edge& first_edge: base->edges)
+        for (const Edge& first_edge: start->edges)
         {
             Moment current_moment = twin_moment(first_edge.twin->earliest_arrive_moment);
             output << "start " << current_moment << " 1\n";
 
             const Vertex* current_vertex = first_edge.to;
-            current_moment += distance(base, first_edge.to);
+            current_moment += distance(start, first_edge.to);
 
             while (true)
             {
@@ -704,7 +665,7 @@ inline namespace graph
 
                 output << "arrive " << current_moment << " " << index << "\n";
 
-                if (current_vertex == backward_base)
+                if (current_vertex == finish)
                 {
                     break;
                 }
@@ -736,22 +697,161 @@ inline namespace graph
 
 }
 
+inline namespace edit
+{
+    Edge* link(Vertex* a, Vertex* b)
+    {
+        const auto add_edge = [](Vertex* v) -> Edge*
+        {
+            assert(v->edges.size() < v->edges.capacity());
+            v->edges.emplace_back();
+            return &v->edges.back();
+        };
+
+        Edge* ab = add_edge(a);
+        Edge* ba = add_edge(b->twin);
+
+        ab->to = b;
+        ab->twin = ba;
+
+        ba->to = a->twin;
+        ba->twin = ab;
+
+        return ab;
+    }
+
+    void unlink(Edge* ab)
+    {
+        const auto remove_edge = [](Vertex* vertex, Edge* edge)
+        {
+            assert(contains_ptr(vertex->edges, edge));
+            const size_t i = edge - vertex->edges.data();
+            vertex->edges[i] = vertex->edges.back();
+            vertex->edges.pop_back();
+        };
+
+        Edge* ba = ab->twin;
+
+        remove_edge(ba->to->twin, ab);
+        remove_edge(ab->to->twin, ba);
+
+        ab->twin = ba;
+        ba->twin = ab;
+    }
+
+    void interpose(Edge* ab, Vertex* v)
+    {
+        Vertex* a = ab->twin->to;
+        Vertex* b = ab->to;
+
+        unlink(ab);
+        link(a, v);
+        link(v, b);
+    }
+
+    TimeWindow time_window_after_interpose(const Edge* ab, const Vertex* v)
+    {
+        Vertex* a = ab->twin->to;
+        Vertex* b = ab->to;
+
+        return TimeWindow
+        {
+            .from = a->get_earliest_work_end_moment() + distance(a, v),
+            .to = twin_moment(b->twin->get_earliest_work_end_moment() + distance(b, v))
+        };
+    }
+
+    void cut(Vertex* v)
+    {
+        // TODO: solving assignment problem, and getting vector of all immediate children can be useful on its own.
+        assert(v->edges.size() == v->twin->edges.size());
+
+        const size_t m = v->edges.size();
+
+        std::vector<Vertex*> froms;
+        std::vector<Vertex*> tos;
+
+        froms.reserve(m);
+        tos.reserve(m);
+
+        for (const Edge& edge : v->edges)
+        {
+            tos.emplace_back(edge.to);
+        }
+
+        for (const Edge& edge : v->twin->edges)
+        {
+            froms.emplace_back(edge.to->twin);
+        }
+
+        Table<int> distances(m, m);
+
+        for (size_t i = 0; i != m; ++i)
+        {
+            for (size_t j = 0; j != m; ++j)
+            {
+                distances.at(i, j) = distance(froms[i], tos[j]);
+            }
+        }
+
+        std::vector<size_t> assignment = solve_assignment_problem(distances);
+
+        for (Vertex* u : { v, v->twin })
+        {
+            for (Edge& edge : u->edges)
+            {
+                unlink(&edge);
+            }
+        }
+
+        for (size_t i = 1; i <= m; ++i)
+        {
+            link(froms[assignment[i] - 1], tos[i - 1]);
+        }
+    }
+}
+
+namespace scorers
+{
+    int interpose_reward(const Edge* ab, const Vertex* c)
+    {
+        const Vertex* a = ab->twin->to->twin;
+        const Vertex* b = ab->to;
+
+        const int d = c->location->duration;
+        const int p = c->location->workers_required;
+
+        return distance(a, b) - distance(a, c) - distance(c, b) + d * (p + 4);
+    }
+}
+
+namespace comparators
+{
+    struct VertexPtrComparator
+    {
+        bool operator()(Vertex* a, Vertex* b) const
+        {
+            return a < b;
+        }
+    };
+}
+
 inline namespace solvers
 {
     void remove_empty_paths(Graph& graph)
     {
-        const Vertex* backward_base = &graph.vertices[Graph::BACKWARD_BASE].forward;
+        const Vertex* finish = graph.forward_finish();
 
-        for (Edge& edge : reversed(graph.vertices[Graph::FORWARD_BASE].forward.edges))
+        for (Edge& edge : reversed(graph.forward_start()->edges))
         {
-            if (edge.to == backward_base)
+            if (edge.to == finish)
             {
                 unlink(&edge);
             }
         }
     }
 
-    void generate_empty_routes(Graph& graph)
+    double expected_workers_required(const Graph& graph)
     {
         const double n = graph.task->n;
         const double average_workers_required = (1. + 8.) / 2.;
@@ -759,20 +859,49 @@ inline namespace solvers
         const double average_gap = 100. / (1. + sqrt(n));
         const double work_time_window_length = 800. - 200.;
 
-        const double expected_workers_required =
-            (n * average_workers_required * (average_duration + average_gap) - average_gap) / work_time_window_length;
+        return (n * average_workers_required * (average_duration + average_gap) - average_gap) / work_time_window_length;
+    }
 
-        const size_t empty_route_count = static_cast<size_t>(1.5 * expected_workers_required);
+    void generate_empty_routes(Graph& graph)
+    {
+        const size_t empty_route_count = static_cast<size_t>(1.5 * expected_workers_required(graph));
 
         for (size_t i = 0; i != empty_route_count; ++i)
         {
-            link(&graph.vertices[Graph::FORWARD_BASE].forward, &graph.vertices[Graph::BACKWARD_BASE].forward);
+            link(graph.forward_start(), graph.forward_finish());
         }
+    }
+
+    void greedy_insert(Graph& graph, Vertex* vertex)
+    {
+
+    }
+
+    std::vector<Vertex*> get_orders(Graph& graph)
+    {
+        std::vector<Vertex*> orders;
+        orders.reserve(graph.task->n - 1);
+
+        assert(graph.vertices.size() == orders.capacity() + 2);
+
+        for (size_t i = 2; i != graph.vertices.size(); ++i)
+        {
+            orders.emplace_back(&graph.vertices[i].forward);
+        }
+
+        return orders;
     }
 
     void greedy(Graph& graph)
     {
+        std::vector<Vertex*> orders = get_orders(graph);
+        comparators::VertexPtrComparator comparator;
+        std::sort(begin(orders), end(orders), comparator);
 
+        for (Vertex* order : orders)
+        {
+            greedy_insert(graph, order);
+        }
     }
 }
 
