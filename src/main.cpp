@@ -83,6 +83,13 @@ inline namespace lib
             assert(j < size2);
             return values[i * size2 + j];
         }
+
+        const Value& at(size_t i, size_t j) const
+        {
+            assert(i < size1);
+            assert(j < size2);
+            return values[i * size2 + j];
+        }
     };
 
     template <class Value>
@@ -99,7 +106,7 @@ inline namespace lib
         std::vector<Value> minv(m + 1, INF);
         std::vector<char> used(m + 1, false);
 
-        for (int i = 1; i <= n; ++i)
+        for (size_t i = 1; i <= n; ++i)
         {
             p[0] = i;
             size_t j0 = 0;
@@ -133,7 +140,7 @@ inline namespace lib
                         }
                     }
                 }
-                for (int j = 0; j <= m; ++j)
+                for (size_t j = 0; j <= m; ++j)
                 {
                     if (used[j])
                     {
@@ -325,7 +332,7 @@ inline namespace graph
     };
 
     struct FullVertex;
-    int distance(const Vertex& a, const Vertex& b);
+    int distance(const Vertex* a, const Vertex* b);
 
     struct Vertex
     {
@@ -408,7 +415,7 @@ inline namespace graph
             for (Edge& edge : edges)
             {
                 // TODO: this computation might be needed when new edge is added
-                edge.earliest_arrive_moment = earliest_work_end_moment + distance(*this, *edge.to);
+                edge.earliest_arrive_moment = earliest_work_end_moment + distance(this, edge.to);
             }
         }
 
@@ -473,9 +480,58 @@ inline namespace graph
         link(v, b);
     }
 
-    int distance(const Vertex& a, const Vertex& b)
+    void cut(Vertex* v)
     {
-        return distance(*a.location, *b.location);
+        // TODO: solving assignment problem, and getting vector of all immediate children can be useful on its own.
+        assert(v->edges.size() == v->twin->edges.size());
+
+        const size_t m = v->edges.size();
+
+        std::vector<Vertex*> froms;
+        std::vector<Vertex*> tos;
+
+        froms.reserve(m);
+        tos.reserve(m);
+
+        for (const Edge& edge : v->edges)
+        {
+            tos.emplace_back(edge.to);
+        }
+
+        for (const Edge& edge : v->twin->edges)
+        {
+            froms.emplace_back(edge.to->twin);
+        }
+
+        Table<int> distances(m, m);
+
+        for (size_t i = 0; i != m; ++i)
+        {
+            for (size_t j = 0; j != m; ++j)
+            {
+                distances.at(i, j) = distance(froms[i], tos[j]);
+            }
+        }
+
+        std::vector<size_t> assignment = solve_assignment_problem(distances);
+
+        for (Vertex* u : { v, v->twin })
+        {
+            for (Edge& edge : u->edges)
+            {
+                unlink(&edge);
+            }
+        }
+
+        for (size_t i = 1; i <= m; ++i)
+        {
+            link(froms[assignment[i] - 1], tos[i - 1]);
+        }
+    }
+
+    int distance(const Vertex* a, const Vertex* b)
+    {
+        return distance(*a->location, *b->location);
     }
 
     struct FullVertex
@@ -568,20 +624,20 @@ inline namespace graph
 
         std::vector<Moment> last_arrive_moments(graph.task->n + 1, -1);
 
-        const auto update_edge = [&last_arrive_moments](const Vertex& from, const Edge& edge, Moment ready_moment)
+        const auto update_edge = [&last_arrive_moments](const Vertex* from, const Edge& edge, Moment ready_moment)
         {
-            const Moment arrive_moment = ready_moment + distance(from, *edge.to);
+            const Moment arrive_moment = ready_moment + distance(from, edge.to);
             const Index to_index = edge.to->location->index;
             last_arrive_moments[to_index] = std::max(last_arrive_moments[to_index], arrive_moment);
         };
 
-        Vertex& base = graph.vertices[Graph::FORWARD_BASE].forward;
-        base.mark_recursively();
+        Vertex* base = &graph.vertices[Graph::FORWARD_BASE].forward;
+        base->mark_recursively();
 
         // Base is special
 
         Vertex::marked.pop(); // Discard base
-        for (const Edge& edge : base.edges)
+        for (const Edge& edge : base->edges)
         {
             update_edge(base, edge, twin_moment(edge.twin->earliest_arrive_moment));
         }
@@ -589,12 +645,12 @@ inline namespace graph
         // Note: we are skipping base here, hence -1.
         while (Vertex::marked.size != 0)
         {
-            const Vertex& from = *Vertex::marked.pop();
-            const Moment work_start_moment = last_arrive_moments[from.location->index];
+            const Vertex* from = Vertex::marked.pop();
+            const Moment work_start_moment = last_arrive_moments[from->location->index];
             assert(work_start_moment != -1);
-            const Moment work_end_moment = work_start_moment + from.location->duration;
+            const Moment work_end_moment = work_start_moment + from->location->duration;
 
-            for (const Edge& edge : from.edges)
+            for (const Edge& edge : from->edges)
             {
                 update_edge(from, edge, work_end_moment);
             }
@@ -619,7 +675,7 @@ inline namespace graph
             output << "start " << current_moment << " 1\n";
 
             const Vertex* current_vertex = first_edge.to;
-            current_moment += distance(*base, *first_edge.to);
+            current_moment += distance(base, first_edge.to);
 
             while (true)
             {
@@ -645,7 +701,7 @@ inline namespace graph
 
                 const Vertex* const next_vertex = current_vertex->edges[visit_count[index]].to;
 
-                current_moment = end_work_moment + distance(*current_vertex, *next_vertex);
+                current_moment = end_work_moment + distance(current_vertex, next_vertex);
 
                 visit_count[index] += 1;
                 current_vertex = next_vertex;
