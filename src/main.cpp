@@ -113,9 +113,14 @@ inline namespace task
         {
             return TimeWindow
             {
-                .from = twin_moment(from),
-                .to = twin_moment(to)
+                .from = twin_moment(to),
+                .to = twin_moment(from)
             };
+        }
+
+        bool is_valid() const
+        {
+            return from <= to;
         }
     };
 
@@ -137,6 +142,12 @@ inline namespace task
                >> result.time_window.from
                >> result.time_window.to;
             result.index = index;
+
+            if (result.is_base())
+            {
+                result.time_window.to = MAX_MOMENT;
+            }
+
             return result;
         }
 
@@ -151,6 +162,17 @@ inline namespace task
                 .index = index
             };
         }
+
+        bool is_base() const
+        {
+            return 1 == index;
+        }
+
+        bool is_valid() const
+        {
+            // NOTE: incomplete implementation until more sanity checks are needed.
+            return time_window.is_valid();
+        }
     };
 
     struct FullLocation
@@ -164,6 +186,9 @@ inline namespace task
 
             result.forward = Location::read(in, index);
             result.backward = result.forward.twin();
+
+            assert(result.forward.is_valid());
+            assert(result.backward.is_valid());
 
             return result;
         }
@@ -228,7 +253,14 @@ inline namespace graph
             , parent(parent)
             , twin(twin)
         {
-            edges.reserve(location->workers_required);
+            if (0 == location->workers_required) // This is base
+            {
+                edges.reserve(MAX_WORKERS_REQUIRED * MAX_LOCATION_COUNT); // TODO: is this cache-friendly?
+            }
+            else
+            {
+                edges.reserve(location->workers_required);
+            }
         }
 
         void fix_twin_pointers_on_realloc()
@@ -287,6 +319,7 @@ inline namespace graph
                 // TODO: early stopping ... but how exactly?
                 marked.pop()->recalculate();
             }
+            current_global_version += 1;
         }
     };
 
@@ -294,19 +327,19 @@ inline namespace graph
     {
         const auto add_edge = [](Vertex* v) -> Edge*
         {
-            assert(v->edges.capacity() > v->edges.size());
+            assert(v->edges.size() < v->edges.capacity());
             v->edges.emplace_back();
             return &v->edges.back();
         };
 
-        Edge* forward_edge = add_edge(a);
-        Edge* backward_edge = add_edge(b->twin);
+        Edge* ab = add_edge(a);
+        Edge* ba = add_edge(b->twin);
 
-        forward_edge->to = b;
-        forward_edge->twin = backward_edge;
+        ab->to = b;
+        ab->twin = ba;
 
-        backward_edge->to = a->twin;
-        backward_edge->twin = forward_edge;
+        ba->to = a->twin;
+        ba->twin = ab;
     }
 
     void unlink(Edge* ab)
@@ -446,7 +479,7 @@ inline namespace graph
 
                 output << "arrive " << current_moment << " " << index << "\n";
 
-                if (current_vertex != backward_base)
+                if (current_vertex == backward_base)
                 {
                     break;
                 }
@@ -455,6 +488,8 @@ inline namespace graph
                 const Moment end_work_moment = start_work_moment + current_vertex->location->duration;
 
                 assert(current_moment <= start_work_moment);
+                assert(current_vertex->location->time_window.from <= start_work_moment);
+                assert(end_work_moment <= current_vertex->location->time_window.to);
 
                 output << "work " << start_work_moment << " " << end_work_moment << " " << index << "\n";
 
