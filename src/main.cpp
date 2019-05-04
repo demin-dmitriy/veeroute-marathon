@@ -5,12 +5,13 @@
 
 #include <array>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <vector>
-#include <iomanip>
 
-#include <ctime>
 #include <cassert>
+#include <ctime>
+#include <cmath>
 
 constexpr double TIME_LIMIT_SECONDS = 15;
 
@@ -164,6 +165,26 @@ inline namespace lib
         }
 
         return p;
+    }
+
+    template <class Range>
+    auto reversed(Range& range)
+    {
+        struct ReversedRange
+        {
+            Range& range;
+
+            explicit ReversedRange(Range& range)
+                : range(range)
+            { }
+
+            auto begin() { return range.rbegin(); }
+            auto begin() const { return range.rbegin(); }
+            auto end() { return range.rend(); }
+            auto end() const { return range.rend(); }
+        };
+
+        return ReversedRange(range);
     }
 }
 
@@ -618,12 +639,8 @@ inline namespace graph
         {
             const Vertex* backward_base = &vertices[BACKWARD_BASE].forward;
 
-            auto& edges = vertices[FORWARD_BASE].forward.edges;
-
-            for (size_t i = 0; i < edges.size(); ++i) // Can't use range-for, because we invalidate `end()` iterator.
+            for (Edge& edge : reversed(vertices[FORWARD_BASE].forward.edges))
             {
-                Edge& edge = edges[i];
-
                 if (edge.to == backward_base)
                 {
                     unlink(&edge);
@@ -732,6 +749,33 @@ inline namespace graph
 
 }
 
+inline namespace solvers
+{
+    void generate_empty_routes(Graph& graph)
+    {
+        const double n = graph.task->n;
+        const double average_workers_required = (1. + 8.) / 2.;
+        const double average_duration = (5. + 30.) / 2.;
+        const double average_gap = 100. / (1. + sqrt(n));
+        const double work_time_window_length = 800. - 200.;
+
+        const double expected_workers_required =
+            (n * average_workers_required * (average_duration + average_gap) - average_gap) / work_time_window_length;
+
+        const size_t empty_route_count = static_cast<size_t>(1.5 * expected_workers_required);
+
+        for (size_t i = 0; i != empty_route_count; ++i)
+        {
+            link(&graph.vertices[Graph::FORWARD_BASE].forward, &graph.vertices[Graph::BACKWARD_BASE].forward);
+        }
+    }
+
+    void greedy(Graph& graph)
+    {
+
+    }
+}
+
 struct Processor
 {
     Task task;
@@ -741,6 +785,13 @@ struct Processor
         : task(input)
         , graph(&task)
     { }
+
+    void run_circuit()
+    {
+        generate_empty_routes(graph);
+        greedy(graph);
+        graph.remove_empty_paths();
+    }
 };
 
 int main(int argc, char** argv)
@@ -756,8 +807,7 @@ int main(int argc, char** argv)
     #endif
 
     Processor processor(input);
-
-    processor.graph.remove_empty_paths();
+    processor.run_circuit();
     std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
