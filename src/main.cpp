@@ -635,19 +635,6 @@ inline namespace graph
             return result;
         }
 
-        void remove_empty_paths()
-        {
-            const Vertex* backward_base = &vertices[BACKWARD_BASE].forward;
-
-            for (Edge& edge : reversed(vertices[FORWARD_BASE].forward.edges))
-            {
-                if (edge.to == backward_base)
-                {
-                    unlink(&edge);
-                }
-            }
-        }
-
         Graph& operator=(Graph&&) = default;
         void operator=(const Graph&) = delete;
     };
@@ -751,6 +738,19 @@ inline namespace graph
 
 inline namespace solvers
 {
+    void remove_empty_paths(Graph& graph)
+    {
+        const Vertex* backward_base = &graph.vertices[Graph::BACKWARD_BASE].forward;
+
+        for (Edge& edge : reversed(graph.vertices[Graph::FORWARD_BASE].forward.edges))
+        {
+            if (edge.to == backward_base)
+            {
+                unlink(&edge);
+            }
+        }
+    }
+
     void generate_empty_routes(Graph& graph)
     {
         const double n = graph.task->n;
@@ -790,7 +790,7 @@ struct Processor
     {
         generate_empty_routes(graph);
         greedy(graph);
-        graph.remove_empty_paths();
+        remove_empty_paths(graph);
     }
 };
 
