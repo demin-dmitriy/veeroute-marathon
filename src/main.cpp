@@ -463,6 +463,15 @@ inline namespace graph
         ba->twin = ab;
     }
 
+    void interpose(Edge* ab, Vertex* v)
+    {
+        Vertex* a = ab->twin->to;
+        Vertex* b = ab->to;
+
+        unlink(ab);
+        link(a, v);
+        link(v, b);
+    }
 
     int distance(const Vertex& a, const Vertex& b)
     {
