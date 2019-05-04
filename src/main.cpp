@@ -323,7 +323,7 @@ inline namespace graph
         }
     };
 
-    void link(Vertex* a, Vertex* b)
+    Edge* link(Vertex* a, Vertex* b)
     {
         const auto add_edge = [](Vertex* v) -> Edge*
         {
@@ -340,6 +340,8 @@ inline namespace graph
 
         ba->to = a->twin;
         ba->twin = ab;
+
+        return ab;
     }
 
     void unlink(Edge* ab)
@@ -388,6 +390,12 @@ inline namespace graph
             forward.recalculate();
             backward.recalculate();
         }
+
+        void copy_dynamics_from(const FullVertex& other)
+        {
+            forward.earliest_work_start_moment = other.forward.earliest_work_start_moment;
+            backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
+        }
     };
 
     struct Graph
@@ -398,27 +406,58 @@ inline namespace graph
             FORWARD_BASE = 1
         };
 
-        const Task& task;
+        const Task* task;
         std::vector<FullVertex> vertices;
 
-        explicit Graph(const Task& task)
+        explicit Graph(const Task* task)
             : task(task)
         {
-            vertices.reserve(task.n + 1);
-            vertices.emplace_back(&task.locations[0]);
+            vertices.reserve(task->n + 1);
+            vertices.emplace_back(&task->locations[0]);
 
-            for (const FullLocation& location : task.locations)
+            for (const FullLocation& location : task->locations)
             {
                 vertices.emplace_back(&location);
             }
         }
+
+        Graph(Graph&&) = default;
+
+        Graph copy() const
+        {
+            Graph result(this->task);
+
+            // Ugly, but whatever.
+            for (size_t i = 0; i != vertices.size(); ++i)
+            {
+                const FullVertex& this_full_vertex = vertices[i];
+                FullVertex& that_full_vertex = result.vertices[i];
+
+                that_full_vertex.copy_dynamics_from(this_full_vertex);
+
+                for (size_t j = 0; j != this_full_vertex.forward.edges.size(); ++j)
+                {
+                    const Edge& this_edge = this_full_vertex.forward.edges[j];
+                    size_t to_index = this_edge.to->parent - vertices.data();
+
+                    Edge* that_edge = link(&that_full_vertex.forward, &result.vertices[to_index].forward);
+                    that_edge->earliest_arrive_moment = this_edge.earliest_arrive_moment;
+                    that_edge->twin->earliest_arrive_moment = this_edge.twin->earliest_arrive_moment;
+                }
+            }
+
+            return result;
+        }
+
+        Graph& operator=(Graph&&) = default;
+        void operator=(const Graph&) = delete;
     };
 
     std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
     {
         assert(0 == Vertex::marked.size);
 
-        std::vector<Moment> last_arrive_moments(graph.task.n + 1, -1);
+        std::vector<Moment> last_arrive_moments(graph.task->n + 1, -1);
 
         const auto update_edge = [&last_arrive_moments](const Vertex& from, const Edge& edge, Moment ready_moment)
         {
@@ -460,7 +499,7 @@ inline namespace graph
     std::ostream& operator<<(std::ostream& output, Graph& graph)
     {
         std::vector<Moment> last_arrive_moment = calculate_true_last_arrive_moments(graph);
-        std::vector<size_t> visit_count(graph.task.n + 1, 0);
+        std::vector<size_t> visit_count(graph.task->n + 1, 0);
 
         const Vertex* const base = &graph.vertices[Graph::FORWARD_BASE].forward;
         const Vertex* const backward_base = &graph.vertices[Graph::BACKWARD_BASE].forward;
@@ -518,7 +557,7 @@ struct Processor
 
     explicit Processor(std::istream& input)
         : task(input)
-        , graph(task)
+        , graph(&task)
     { }
 };
 
