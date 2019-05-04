@@ -614,6 +614,23 @@ inline namespace graph
             return result;
         }
 
+        void remove_empty_paths()
+        {
+            const Vertex* backward_base = &vertices[BACKWARD_BASE].forward;
+
+            auto& edges = vertices[FORWARD_BASE].forward.edges;
+
+            for (size_t i = 0; i < edges.size(); ++i) // Can't use range-for, because we invalidate `end()` iterator.
+            {
+                Edge& edge = edges[i];
+
+                if (edge.to == backward_base)
+                {
+                    unlink(&edge);
+                }
+            }
+        }
+
         Graph& operator=(Graph&&) = default;
         void operator=(const Graph&) = delete;
     };
@@ -740,6 +757,7 @@ int main(int argc, char** argv)
 
     Processor processor(input);
 
+    processor.graph.remove_empty_paths();
     std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
