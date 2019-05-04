@@ -63,6 +63,101 @@ inline namespace lib
     {
         return xs.data() <= x and x < xs.data() + xs.size();
     }
+
+    template <class Value>
+    struct Table
+    {
+        size_t size1;
+        size_t size2;
+        std::vector<Value> values;
+
+        Table(size_t size1, size_t size2)
+            : size1(size1)
+            , size2(size2)
+            , values(size1 * size2)
+        { }
+
+        Value& at(size_t i, size_t j)
+        {
+            assert(i < size1);
+            assert(j < size2);
+            return values[i * size2 + j];
+        }
+    };
+
+    template <class Value>
+    std::vector<size_t> solve_assignment_problem(const Table<Value>& table)
+    {
+        // Copied with small modifications from https://e-maxx.ru/algo/assignment_hungary
+        const Value INF = 1000000;
+
+        const size_t n = table.size1;
+        const size_t m = table.size2;
+
+        std::vector<Value> u(n + 1), v(m + 1);
+        std::vector<size_t> p(m + 1), way(m + 1);
+        std::vector<Value> minv(m + 1, INF);
+        std::vector<char> used(m + 1, false);
+
+        for (int i = 1; i <= n; ++i)
+        {
+            p[0] = i;
+            size_t j0 = 0;
+
+            if (i > 1)
+            {
+                fill(begin(used), end(used), false);
+                fill(begin(minv), end(minv), INF);
+            }
+
+            do
+            {
+                used[j0] = true;
+                size_t i0 = p[j0];
+                size_t j1 = 0;
+                Value delta = INF;
+
+                for (size_t j = 1; j <= m; ++j)
+                {
+                    if (!used[j]) {
+                        const Value cur = table.at(i0 - 1, j - 1) - u[i0] - v[j];
+                        if (cur < minv[j])
+                        {
+                            minv[j] = cur;
+                            way[j] = j0;
+                        }
+                        if (minv[j] < delta)
+                        {
+                            delta = minv[j];
+                            j1 = j;
+                        }
+                    }
+                }
+                for (int j = 0; j <= m; ++j)
+                {
+                    if (used[j])
+                    {
+                        u[p[j]] += delta;
+                        v[j] -= delta;
+                    }
+                    else
+                    {
+                        minv[j] -= delta;
+                    }
+                }
+                j0 = j1;
+            } while (p[j0] != 0);
+
+            do
+            {
+                int j1 = way[j0];
+                p[j0] = p[j1];
+                j0 = j1;
+            } while (j0);
+        }
+
+        return p;
+    }
 }
 
 inline namespace task
