@@ -75,6 +75,22 @@ def clear_last_lines(count):
         print('\033[1A\033[K', end='')
 
 
+def run_solver(solver, task, result):
+    start = time.time()
+    checker_result_str = (solver['--task', task] | check['--task', task])()
+    end = time.time()
+    result.add(end - start, json.loads(checker_result_str))
+
+
+def print_result_console(i, item, n, result):
+    if i > 0:
+        result.clear_previous_output()
+        clear_last_lines(1)
+
+    print(f'[{item} / {n}]')
+    result.print()
+
+
 def main(argv):
     args = parse_args(argv)
     solver = local[args.executable]
@@ -84,23 +100,25 @@ def main(argv):
     result = Result()
 
     with local.cwd(str(EVAL_DIR)):
-        for i in range(args.count):
-            (generate > 'test.in')()
-            start = time.time()
-            checker_result_str = (solver['--task', 'test.in'] | check['--task', 'test.in'])()
-            end = time.time()
-            result.add(end - start, json.loads(checker_result_str))
+        if args.dataset is None:
+            for i in range(args.count):
+                (generate > 'task.in')()
+                run_solver(solver, 'task.in', result)
+                print_result_console(i, i, args.count, result)
+        else:
+            tasks = sorted(Path(args.dataset).glob('*.in'))
+            for i, task in enumerate(tasks):
+                run_solver(solver, task, result)
+                print_result_console(i, str(task), len(tasks), result)
 
-            if i > 0:
-                result.clear_previous_output()
-                clear_last_lines(1)
-
-            print(f'[{i} / {args.count}]')
-            result.print()
 
     if not args.no_log:
         with (EVAL_DIR / 'log.txt').open('a') as log:
-            log.write(f'\n{time.strftime("%Y-%m-%d %H:%M")} count={args.count}  { "# " + args.message if args.message else "" } \n')
+            comment = f' # {args.message}' if args.message else ''
+            count = f' count={args.count}' if not args.dataset else ''
+            dataset = f' dataset={args.dataset}' if args.dataset else ''
+
+            log.write(f'\n{time.strftime("%Y-%m-%d %H:%M")} {count}{dataset}{comment}\n')
             result.print(file=log)
 
 
