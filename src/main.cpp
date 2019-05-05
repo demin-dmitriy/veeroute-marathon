@@ -419,10 +419,26 @@ inline namespace graph
 
     struct Edge
     {
-        Vertex* to;
-        size_t index;
-        Edge* twin;
-        Moment earliest_arrive_moment;
+        Vertex* to
+            #ifndef NDEBUG
+                = nullptr
+            #endif
+            ;
+        size_t index
+            #ifndef NDEBUG
+                = 800000
+            #endif
+            ;
+        Edge* twin
+            #ifndef NDEBUG
+                = nullptr
+            #endif
+            ;
+        Moment earliest_arrive_moment
+            #ifndef NDEBUG
+                = 10000
+            #endif
+            ;
     };
 
     struct FullVertex;
@@ -647,16 +663,19 @@ inline namespace graph
             remove_edge(ab->to->twin, ba);
         }
 
-        void interpose(Edge* ab, Vertex* v)
+        void interpose(Edge* ab, Vertex* c)
         {
             Vertex* a = ab->twin->to->twin;
             Vertex* b = ab->to;
 
             unlink(ab);
-            link(a, v);
-            link(v, b);
+            Edge* ac = link(a, c);
+            Edge* cb = link(c, b);
 
-            assert(v->edges.size() == v->twin->edges.size());
+            ac->earliest_arrive_moment = a->get_earliest_work_end_moment() + distance(a, c);
+            cb->twin->earliest_arrive_moment = b->twin->get_earliest_work_end_moment() + distance(b, c);
+
+            assert(c->edges.size() == c->twin->edges.size());
         }
 
         void cut(Vertex* v)
@@ -919,7 +938,11 @@ inline namespace solvers
 
     void generate_empty_routes(Graph& graph)
     {
-        const size_t empty_route_count = static_cast<size_t>(1.5 * expected_workers_required(graph));
+        const size_t empty_route_count = std::min
+        (
+            graph.task->sum_workers_required,
+            static_cast<size_t>(2 * expected_workers_required(graph))
+        );
 
         for (size_t i = 0; i != empty_route_count; ++i)
         {
@@ -1137,6 +1160,6 @@ int main(int argc, char** argv)
     std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
-        std::cerr << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds.\n";
+        std::cout << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds." << std::endl;
     #endif
 }
