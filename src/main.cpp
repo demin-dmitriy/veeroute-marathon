@@ -62,6 +62,21 @@ inline namespace lib
         }
     };
 
+    template <class V, class Func>
+    auto map(const std::vector<V>& values, Func&& func) -> std::vector<decltype(func(std::declval<V>()))>
+    {
+        using U = decltype(func(std::declval<V>()));
+        std::vector<U> result;
+        result.reserve(values.size());
+
+        for (const V& value : values)
+        {
+            result.emplace_back(func(value));
+        }
+
+        return result;
+    }
+
     template <class T>
     bool contains_ptr(const std::vector<T>& xs, const T* x)
     {
@@ -823,6 +838,49 @@ inline namespace graph
         throw std::runtime_error("Not implemented yet");
     }
 
+    bool are_all_vertices_unmarked(const Graph& graph)
+    {
+        for (const FullVertex & full_vertex : graph.vertices)
+        {
+            if (full_vertex.forward.is_marked() or full_vertex.backward.is_marked())
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool are_dynamics_up_to_date(Graph& graph)
+    {
+        assert(0 == Vertex::marked.size);
+
+        graph.forward_start()->mark_recursively();
+        graph.backward_start()->mark_recursively();
+
+        // TODO: use graph copy instead of manual checking
+        while (Vertex::marked.size != 0)
+        {
+            Vertex* v = Vertex::marked.pop();
+
+            Moment vertex_dynamic_before = v->earliest_work_start_moment;
+            std::vector<int> edge_dynamic_before = map(v->edges, [](Edge* edge) { return edge->earliest_arrive_moment; });
+
+            v->recalculate();
+
+            Moment vertex_dynamic_after = v->earliest_work_start_moment;
+            std::vector<int> edge_dynamic_after = map(v->edges, [](Edge* edge) { return edge->earliest_arrive_moment; });
+
+            if (vertex_dynamic_before != vertex_dynamic_after or edge_dynamic_before != edge_dynamic_after)
+            {
+                Vertex::unmark_all();
+                return false;
+            }
+        }
+
+        Vertex::unmark_all();
+        return true;
+    }
+
     std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
     {
         assert(0 == Vertex::marked.size);
@@ -835,6 +893,9 @@ inline namespace graph
             const Index to_index = edge->to->location->index;
             last_arrive_moments[to_index] = std::max(last_arrive_moments[to_index], arrive_moment);
         };
+
+        assert(are_all_vertices_unmarked(graph));
+        assert(are_dynamics_up_to_date(graph));
 
         Vertex* base = graph.forward_start();
         base->mark_recursively();
@@ -1109,7 +1170,7 @@ inline namespace solvers
                     }
                 }
 
-                Vertex::marked.clear();
+                Vertex::unmark_all();
                 chosen.clear();
             }
 
