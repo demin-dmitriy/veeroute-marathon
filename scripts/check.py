@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-import sys
+import json
 import re
+import sys
 
 from argparse import ArgumentParser
 
@@ -160,13 +161,13 @@ def main(argv):
             total_reward += location.duration * location.p * (location.p + 5)
             location_stats[location.p] += 1
 
-    print({
+    print(json.dumps({
         'reward': total_reward,
         'workers': total_worker_count,
         'locations': sum(location_stats.values()),
         'distance': total_distance,
         'locations_by_p': location_stats,
-    })
+    }))
 
 
 if __name__ == '__main__':
