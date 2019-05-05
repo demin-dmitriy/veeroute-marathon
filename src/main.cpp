@@ -67,6 +67,41 @@ inline namespace lib
     }
 
     template <class T>
+    struct Pool
+    {
+        size_t size;
+        size_t next_free;
+        std::vector<T> storage;
+        std::vector<T*> free;
+
+        explicit Pool(size_t size)
+            : size(size)
+            , next_free(0)
+        {
+            storage.resize(size);
+            free.resize(size);
+
+            for (size_t i = 0; i != size; ++i)
+            {
+                free[i] = storage.data() + i;
+            }
+        }
+
+        T* allocate() noexcept
+        {
+            assert(next_free < free.size());
+            return free[next_free++];
+        }
+
+        void deallocate(T* ptr) noexcept
+        {
+            assert(contains_ptr(storage, ptr));
+            assert(next_free > 0);
+            free[--next_free] = ptr;
+        }
+    };
+
+    template <class T>
     struct Span
     {
         T* data;
@@ -360,7 +395,10 @@ inline namespace task
         size_t n;
         std::vector<FullLocation> locations;
 
+        size_t sum_workers_required;
+
         explicit Task(std::istream& in)
+            : sum_workers_required(0)
         {
             in >> n;
             assert(n > 0);
@@ -369,6 +407,7 @@ inline namespace task
             for (size_t i = 0; i != n; ++i)
             {
                 locations.emplace_back(FullLocation::read(in, i + 1));
+                sum_workers_required += locations.back().forward.workers_required;
             }
         }
     };
@@ -381,6 +420,7 @@ inline namespace graph
     struct Edge
     {
         Vertex* to;
+        size_t index;
         Edge* twin;
         Moment earliest_arrive_moment;
     };
@@ -392,21 +432,19 @@ inline namespace graph
     {
         using Version = unsigned int; // Won't overflow in 15 seconds. Could overflow, if it was running longer.
 
-        static inline CheapStack<Vertex*, 2 * (MAX_LOCATION_COUNT + 1)> marked; // Store both forward and backward vertices
+        static inline CheapStack<Vertex*, 2 * (MAX_LOCATION_COUNT + 1)> marked; // Stores both forward and backward vertices
         static inline Version current_global_version = 1;
 
         Moment earliest_work_start_moment; // TODO: maybe end_moment is more convenient to work with
         Version version;
         const Location* const location;
-        FullVertex* const parent;
         Vertex* const twin;
-        std::vector<Edge> edges;
+        std::vector<Edge*> edges;
 
         explicit Vertex(FullVertex* parent, Vertex* twin, const Location* location)
             : earliest_work_start_moment(-1)
             , version(0)
             , location(location)
-            , parent(parent)
             , twin(twin)
         {
             if (0 == location->workers_required) // This is base
@@ -416,14 +454,6 @@ inline namespace graph
             else
             {
                 edges.reserve(location->workers_required);
-            }
-        }
-
-        void fix_twin_pointers_on_realloc()
-        {
-            for (Edge& edge : edges)
-            {
-                edge.twin->twin = &edge;
             }
         }
 
@@ -444,9 +474,9 @@ inline namespace graph
             {
                 version = current_global_version;
 
-                for (const Edge& edge : edges)
+                for (const Edge* edge : edges)
                 {
-                    edge.to->mark_recursively();
+                    edge->to->mark_recursively();
                 }
 
                 marked.push(this);
@@ -462,19 +492,19 @@ inline namespace graph
         {
             earliest_work_start_moment = location->time_window.from;
 
-            for (const Edge& twin_edge : twin->edges)
+            for (const Edge* twin_edge : twin->edges)
             {
-                earliest_work_start_moment = std::max(earliest_work_start_moment, twin_edge.twin->earliest_arrive_moment);
+                earliest_work_start_moment = std::max(earliest_work_start_moment, twin_edge->twin->earliest_arrive_moment);
             }
 
             const Moment earliest_work_end_moment = get_earliest_work_end_moment();
 
             assert(earliest_work_end_moment <= location->time_window.to);
 
-            for (Edge& edge : edges)
+            for (Edge* edge : edges)
             {
                 // TODO: this computation might be needed when new edge is added
-                edge.earliest_arrive_moment = earliest_work_end_moment + distance(this, edge.to);
+                edge->earliest_arrive_moment = earliest_work_end_moment + distance(this, edge->to);
             }
         }
 
@@ -533,10 +563,14 @@ inline namespace graph
 
         const Task* task;
         std::vector<FullVertex> vertices;
+        Pool<Edge> edge_pool;
 
         explicit Graph(const Task* task)
             : task(task)
+            , edge_pool(4 * task->sum_workers_required)
         {
+            assert(task->n >= 1);
+
             vertices.reserve(task->n + 1);
             vertices.emplace_back(&task->locations[0]);
 
@@ -544,6 +578,9 @@ inline namespace graph
             {
                 vertices.emplace_back(&location);
             }
+
+            vertices[FORWARD_BASE].recalculate();
+            vertices[BACKWARD_BASE].recalculate();
         }
 
         Graph(Graph&&) = default;
@@ -568,37 +605,141 @@ inline namespace graph
             return &vertices[FORWARD_BASE].backward;
         }
 
-        Graph copy() const
+        Edge* link(Vertex* a, Vertex* b)
         {
-            Edge* link(Vertex*, Vertex*);
-
-            Graph result(this->task);
-
-            // Ugly, but whatever.
-            for (size_t i = 0; i != vertices.size(); ++i)
+            const auto add_edge = [this](Vertex* v) -> Edge*
             {
-                const FullVertex& this_full_vertex = vertices[i];
-                FullVertex& that_full_vertex = result.vertices[i];
+                assert(v->edges.size() < v->edges.capacity());
+                Edge* edge = edge_pool.allocate();
+                edge->index = v->edges.size();
+                v->edges.emplace_back(edge);
+                return edge;
+            };
 
-                that_full_vertex.copy_dynamics_from(this_full_vertex);
+            Edge* ab = add_edge(a);
+            Edge* ba = add_edge(b->twin);
 
-                for (size_t j = 0; j != this_full_vertex.forward.edges.size(); ++j)
+            ab->to = b;
+            ab->twin = ba;
+
+            ba->to = a->twin;
+            ba->twin = ab;
+
+            return ab;
+        }
+
+        void unlink(Edge* ab)
+        {
+            const auto remove_edge = [this](Vertex* vertex, Edge* edge)
+            {
+                assert(contains_ptr(edge_pool.storage, edge));
+                assert(edge->index < vertex->edges.size());
+                assert(vertex->edges[edge->index] == edge);
+                vertex->edges[edge->index] = vertex->edges.back();
+                vertex->edges[edge->index]->index = edge->index;
+                vertex->edges.pop_back();
+                edge_pool.deallocate(edge);
+            };
+
+            Edge* ba = ab->twin;
+
+            remove_edge(ba->to->twin, ab);
+            remove_edge(ab->to->twin, ba);
+        }
+
+        void interpose(Edge* ab, Vertex* v)
+        {
+            Vertex* a = ab->twin->to->twin;
+            Vertex* b = ab->to;
+
+            unlink(ab);
+            link(a, v);
+            link(v, b);
+
+            assert(v->edges.size() == v->twin->edges.size());
+        }
+
+        void cut(Vertex* v)
+        {
+            // TODO: solving assignment problem, and getting vector of all immediate children can be useful on its own.
+            assert(v->edges.size() == v->twin->edges.size());
+
+            const size_t m = v->edges.size();
+
+            std::vector<Vertex*> froms;
+            std::vector<Vertex*> tos;
+
+            froms.reserve(m);
+            tos.reserve(m);
+
+            for (const Edge* edge : v->edges)
+            {
+                tos.emplace_back(edge->to);
+            }
+
+            for (const Edge* edge : v->twin->edges)
+            {
+                froms.emplace_back(edge->to->twin);
+            }
+
+            Table<int> distances(m, m);
+
+            for (size_t i = 0; i != m; ++i)
+            {
+                for (size_t j = 0; j != m; ++j)
                 {
-                    const Edge& this_edge = this_full_vertex.forward.edges[j];
-                    size_t to_index = this_edge.to->parent - vertices.data();
-
-                    Edge* that_edge = link(&that_full_vertex.forward, &result.vertices[to_index].forward);
-                    that_edge->earliest_arrive_moment = this_edge.earliest_arrive_moment;
-                    that_edge->twin->earliest_arrive_moment = this_edge.twin->earliest_arrive_moment;
+                    distances.at(i, j) = distance(froms[i], tos[j]);
                 }
             }
 
-            return result;
+            std::vector<size_t> assignment = solve_assignment_problem(distances);
+
+            for (Vertex* u : { v, v->twin })
+            {
+                for (Edge* edge : u->edges)
+                {
+                    unlink(edge);
+                }
+            }
+
+            for (size_t i = 1; i <= m; ++i)
+            {
+                link(froms[assignment[i] - 1], tos[i - 1]);
+            }
         }
+
+        Graph copy() const;
 
         Graph& operator=(Graph&&) = default;
         void operator=(const Graph&) = delete;
     };
+
+    Graph Graph::copy() const
+    {
+//        Graph result(this->task);
+//
+//        // Ugly, but whatever.
+//        for (size_t i = 0; i != vertices.size(); ++i)
+//        {
+//            const FullVertex& this_full_vertex = vertices[i];
+//            FullVertex& that_full_vertex = result.vertices[i];
+//
+//            that_full_vertex.copy_dynamics_from(this_full_vertex);
+//
+//            for (size_t j = 0; j != this_full_vertex.forward.edges.size(); ++j)
+//            {
+//                const Edge& this_edge = this_full_vertex.forward.edges[j];
+//                size_t to_index = this_edge.to->parent - vertices.data();
+//
+//                Edge* that_edge = result.link(&that_full_vertex.forward, &result.vertices[to_index].forward);
+//                that_edge->earliest_arrive_moment = this_edge.earliest_arrive_moment;
+//                that_edge->twin->earliest_arrive_moment = this_edge.twin->earliest_arrive_moment;
+//            }
+//        }
+//
+//        return result;
+        throw std::runtime_error("Not implemented yet");
+    }
 
     std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
     {
@@ -606,10 +747,10 @@ inline namespace graph
 
         std::vector<Moment> last_arrive_moments(graph.task->n + 1, -1);
 
-        const auto update_edge = [&last_arrive_moments](const Vertex* from, const Edge& edge, Moment ready_moment)
+        const auto update_edge = [&last_arrive_moments](const Vertex* from, const Edge* edge, Moment ready_moment)
         {
-            const Moment arrive_moment = ready_moment + distance(from, edge.to);
-            const Index to_index = edge.to->location->index;
+            const Moment arrive_moment = ready_moment + distance(from, edge->to);
+            const Index to_index = edge->to->location->index;
             last_arrive_moments[to_index] = std::max(last_arrive_moments[to_index], arrive_moment);
         };
 
@@ -619,9 +760,9 @@ inline namespace graph
         // Base is special
 
         Vertex::marked.pop(); // Discard base
-        for (const Edge& edge : base->edges)
+        for (const Edge* edge : base->edges)
         {
-            update_edge(base, edge, twin_moment(edge.twin->earliest_arrive_moment));
+            update_edge(base, edge, twin_moment(edge->twin->earliest_arrive_moment));
         }
 
         // Note: we are skipping base here, hence -1.
@@ -632,7 +773,7 @@ inline namespace graph
             assert(work_start_moment != -1);
             const Moment work_end_moment = work_start_moment + from->location->duration;
 
-            for (const Edge& edge : from->edges)
+            for (const Edge* edge : from->edges)
             {
                 update_edge(from, edge, work_end_moment);
             }
@@ -651,13 +792,13 @@ inline namespace graph
         const Vertex* const start = graph.forward_start();
         const Vertex* const finish = graph.forward_finish();
 
-        for (const Edge& first_edge: start->edges)
+        for (const Edge* first_edge: start->edges)
         {
-            Moment current_moment = twin_moment(first_edge.twin->earliest_arrive_moment);
+            Moment current_moment = twin_moment(first_edge->twin->earliest_arrive_moment);
             output << "start " << current_moment << " 1\n";
 
-            const Vertex* current_vertex = first_edge.to;
-            current_moment += distance(start, first_edge.to);
+            const Vertex* current_vertex = first_edge->to;
+            current_moment += distance(start, first_edge->to);
 
             while (true)
             {
@@ -681,7 +822,7 @@ inline namespace graph
 
                 assert(visit_count[index] < current_vertex->edges.size());
 
-                const Vertex* const next_vertex = current_vertex->edges[visit_count[index]].to;
+                const Vertex* const next_vertex = current_vertex->edges[visit_count[index]]->to;
 
                 current_moment = end_work_moment + distance(current_vertex, next_vertex);
 
@@ -699,115 +840,21 @@ inline namespace graph
 
 inline namespace edit
 {
-    Edge* link(Vertex* a, Vertex* b)
-    {
-        const auto add_edge = [](Vertex* v) -> Edge*
-        {
-            assert(v->edges.size() < v->edges.capacity());
-            v->edges.emplace_back();
-            return &v->edges.back();
-        };
 
-        Edge* ab = add_edge(a);
-        Edge* ba = add_edge(b->twin);
-
-        ab->to = b;
-        ab->twin = ba;
-
-        ba->to = a->twin;
-        ba->twin = ab;
-
-        return ab;
-    }
-
-    void unlink(Edge* ab)
-    {
-        const auto remove_edge = [](Vertex* vertex, Edge* edge)
-        {
-            assert(contains_ptr(vertex->edges, edge));
-            const size_t i = edge - vertex->edges.data();
-            vertex->edges[i] = vertex->edges.back();
-            vertex->edges.pop_back();
-        };
-
-        Edge* ba = ab->twin;
-
-        remove_edge(ba->to->twin, ab);
-        remove_edge(ab->to->twin, ba);
-
-        ab->twin = ba;
-        ba->twin = ab;
-    }
-
-    void interpose(Edge* ab, Vertex* v)
-    {
-        Vertex* a = ab->twin->to;
-        Vertex* b = ab->to;
-
-        unlink(ab);
-        link(a, v);
-        link(v, b);
-    }
 
     TimeWindow time_window_after_interpose(const Edge* ab, const Vertex* v)
     {
         Vertex* a = ab->twin->to;
         Vertex* b = ab->to;
 
-        return TimeWindow
-        {
-            .from = a->get_earliest_work_end_moment() + distance(a, v),
-            .to = twin_moment(b->twin->get_earliest_work_end_moment() + distance(b, v))
-        };
-    }
-
-    void cut(Vertex* v)
-    {
-        // TODO: solving assignment problem, and getting vector of all immediate children can be useful on its own.
-        assert(v->edges.size() == v->twin->edges.size());
-
-        const size_t m = v->edges.size();
-
-        std::vector<Vertex*> froms;
-        std::vector<Vertex*> tos;
-
-        froms.reserve(m);
-        tos.reserve(m);
-
-        for (const Edge& edge : v->edges)
-        {
-            tos.emplace_back(edge.to);
-        }
-
-        for (const Edge& edge : v->twin->edges)
-        {
-            froms.emplace_back(edge.to->twin);
-        }
-
-        Table<int> distances(m, m);
-
-        for (size_t i = 0; i != m; ++i)
-        {
-            for (size_t j = 0; j != m; ++j)
+        return v->location->time_window.intersect
+        (
+            TimeWindow
             {
-                distances.at(i, j) = distance(froms[i], tos[j]);
+                .from = a->get_earliest_work_end_moment() + distance(a, v),
+                .to = twin_moment(b->twin->get_earliest_work_end_moment() + distance(b, v))
             }
-        }
-
-        std::vector<size_t> assignment = solve_assignment_problem(distances);
-
-        for (Vertex* u : { v, v->twin })
-        {
-            for (Edge& edge : u->edges)
-            {
-                unlink(&edge);
-            }
-        }
-
-        for (size_t i = 1; i <= m; ++i)
-        {
-            link(froms[assignment[i] - 1], tos[i - 1]);
-        }
+        );
     }
 }
 
@@ -822,6 +869,14 @@ namespace scorers
         const int p = c->location->workers_required;
 
         return distance(a, b) - distance(a, c) - distance(c, b) + d * (p + 4);
+    }
+
+    int radial_cost(Vector center, Vertex* x)
+    {
+        const int d = x->location->duration;
+        const int p = x->location->workers_required;
+
+        return 2 * distance(center, x->location->point) - d * p * (p + 4);
     }
 }
 
@@ -842,11 +897,11 @@ inline namespace solvers
     {
         const Vertex* finish = graph.forward_finish();
 
-        for (Edge& edge : reversed(graph.forward_start()->edges))
+        for (Edge* edge : reversed(graph.forward_start()->edges))
         {
-            if (edge.to == finish)
+            if (edge->to == finish)
             {
-                unlink(&edge);
+                graph.unlink(edge);
             }
         }
     }
@@ -868,41 +923,172 @@ inline namespace solvers
 
         for (size_t i = 0; i != empty_route_count; ++i)
         {
-            link(graph.forward_start(), graph.forward_finish());
+            graph.link(graph.forward_start(), graph.forward_finish());
         }
+        // TODO: initial dynamics?
     }
 
-    void greedy_insert(Graph& graph, Vertex* vertex)
+    size_t get_total_edge_count(const Graph& graph)
     {
+        size_t count = 0;
 
-    }
-
-    std::vector<Vertex*> get_orders(Graph& graph)
-    {
-        std::vector<Vertex*> orders;
-        orders.reserve(graph.task->n - 1);
-
-        assert(graph.vertices.size() == orders.capacity() + 2);
-
-        for (size_t i = 2; i != graph.vertices.size(); ++i)
+        for (const FullVertex& full_vertex : graph.vertices)
         {
-            orders.emplace_back(&graph.vertices[i].forward);
+            count += full_vertex.forward.edges.size();
         }
 
-        return orders;
+        return count;
     }
 
-    void greedy(Graph& graph)
+    namespace greedy
     {
-        std::vector<Vertex*> orders = get_orders(graph);
-        comparators::VertexPtrComparator comparator;
-        std::sort(begin(orders), end(orders), comparator);
-
-        for (Vertex* order : orders)
+        struct Candidate
         {
-            greedy_insert(graph, order);
+            Edge* edge;
+            TimeWindow time_window;
+            int reward;
+
+            bool operator<(const Candidate& other) const noexcept { return reward > other.reward; }
+        };
+
+        std::vector<Candidate> get_candidates(Graph& graph, Vertex* vertex)
+        {
+            std::vector<Candidate> candidates;
+            candidates.reserve(get_total_edge_count(graph));
+
+            const int duration = vertex->location->duration;
+
+            for (FullVertex& full_vertex : graph.vertices)
+            {
+                for (Edge* edge : full_vertex.forward.edges)
+                {
+                    const TimeWindow time_window = time_window_after_interpose(edge, vertex);
+                    if (time_window.length() >= duration)
+                    {
+                        candidates.emplace_back(Candidate
+                        {
+                            .edge = edge,
+                            .time_window = time_window,
+                            .reward = scorers::interpose_reward(edge, vertex)
+                        });
+                    }
+                }
+            }
+
+            std::sort(begin(candidates), end(candidates));
+
+            return candidates;
+        }
+
+        std::vector<const Candidate*> select_from_candidates(const std::vector<Candidate>& candidates, Vertex* vertex)
+        {
+            assert(0 == Vertex::marked.size);
+
+            const size_t workers_required = static_cast<size_t>(vertex->location->workers_required);
+            const int duration = vertex->location->duration;
+            const int max_attempt_count = 8; // TODO: parameterize
+
+            std::vector<const Candidate*> chosen;
+            chosen.reserve(workers_required);
+
+            for (int i = 0; i != max_attempt_count; ++i)
+            {
+                TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
+
+                for (const Candidate& candidate : candidates)
+                {
+                    const TimeWindow new_time_window = current_time_window.intersect(candidate.time_window);
+
+                    if (new_time_window.length() < duration)
+                    {
+                        continue;
+                    }
+
+                    if (candidate.edge->twin->to->twin->is_marked() or candidate.edge->to->twin->is_marked())
+                    {
+                        continue;
+                    }
+
+                    candidate.edge->to->mark_recursively();
+                    candidate.edge->twin->to->mark_recursively();
+
+                    current_time_window = new_time_window;
+                    chosen.emplace_back(&candidate);
+
+                    if (chosen.size() == workers_required)
+                    {
+                        // Keep vertices marked because they're exactly those which need to be recomputed.
+                        return chosen;
+                    }
+                }
+
+                Vertex::marked.clear();
+                chosen.clear();
+            }
+
+            return chosen;
+        }
+
+        void insert(Graph& graph, Vertex* vertex)
+        {
+            assert(not vertex->location->is_base());
+            assert(vertex->edges.empty());
+            assert(vertex->twin->edges.empty());
+
+            const std::vector<Candidate> candidates = get_candidates(graph, vertex);
+            const std::vector<const Candidate*> chosen = select_from_candidates(candidates, vertex);
+
+            if (not chosen.empty())
+            {
+                assert(chosen.size() == static_cast<size_t>(vertex->location->workers_required));
+
+                for (const Candidate* candidate : chosen)
+                {
+                    graph.interpose(candidate->edge, vertex);
+                }
+
+                assert(vertex->edges.size() == static_cast<size_t>(vertex->location->workers_required));
+                assert(vertex->twin->edges.size() == static_cast<size_t>(vertex->location->workers_required));
+
+                vertex->mark_recursively();
+                vertex->twin->mark_recursively();
+
+                Vertex::recalculate_all_marked();
+            }
+
+            assert(0 == Vertex::marked.size);
+        }
+
+        std::vector<Vertex*> get_orders(Graph& graph)
+        {
+            std::vector<Vertex*> orders;
+            orders.reserve(graph.task->n - 1);
+
+            assert(graph.vertices.size() == orders.capacity() + 2);
+
+            for (size_t i = 2; i != graph.vertices.size(); ++i)
+            {
+                orders.emplace_back(&graph.vertices[i].forward);
+            }
+
+            return orders;
+        }
+
+        // TODO: параметризовать
+        void optimize(Graph& graph)
+        {
+            std::vector<Vertex*> orders = get_orders(graph);
+            // TODO: accept comparator as a parameter
+            comparators::VertexPtrComparator comparator;
+            std::sort(begin(orders), end(orders), comparator);
+
+            for (Vertex* order : orders)
+            {
+                insert(graph, order);
+            }
         }
     }
+
 }
 
 struct Processor
@@ -918,7 +1104,7 @@ struct Processor
     void run_circuit()
     {
         generate_empty_routes(graph);
-        greedy(graph);
+        greedy::optimize(graph);
         remove_empty_paths(graph);
     }
 };
