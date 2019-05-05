@@ -1283,6 +1283,8 @@ int main(int argc, char** argv)
         };
 
         std::unique_ptr<std::ifstream> input_file = nullptr;
+        bool report = false;
+        bool graphviz = false;
 
         for (int i = 1; i < argc; ++i)
         {
@@ -1293,6 +1295,14 @@ int main(int argc, char** argv)
                 ensure(argc > i + 1);
                 i += 1;
                 input_file = std::make_unique<std::ifstream>(argv[i]);
+            }
+            else if (arg_i == "--report")
+            {
+                report = true;
+            }
+            else if (arg_i == "--graphviz")
+            {
+                graphviz = true;
             }
             else
             {
@@ -1309,12 +1319,18 @@ int main(int argc, char** argv)
     processor.run_circuit();
 
     #ifndef ONLINE_JUDGE
-        processor.graph.dump_graphviz();
+        if (graphviz)
+        {
+            processor.graph.dump_graphviz();
+        }
     #endif
 
     std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
-        std::cerr << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds." << std::endl;
+        if (report)
+        {
+            std::cerr << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds." << std::endl;
+        }
     #endif
 }
