@@ -923,9 +923,9 @@ inline namespace solvers
 
         for (size_t i = 0; i != empty_route_count; ++i)
         {
-            graph.link(graph.forward_start(), graph.forward_finish());
+            Edge* edge = graph.link(graph.forward_start(), graph.forward_finish());
+            edge->earliest_arrive_moment = edge->twin->earliest_arrive_moment = 0;
         }
-        // TODO: initial dynamics?
     }
 
     size_t get_total_edge_count(const Graph& graph)
