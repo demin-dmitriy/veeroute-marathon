@@ -183,6 +183,22 @@ inline namespace lib
         values = map(indices, [&values](size_t i) { return values[i]; });
     }
 
+    template <class T, class Container>
+    Span<T> skip(size_t k, Container&& container)
+    {
+        Span<T> span(container);
+        if (k >= container.size())
+        {
+            span.size = 0;
+        }
+        else
+        {
+            span.data += k;
+            span.size -= k;
+        }
+        return span;
+    }
+
     template <class Value>
     std::vector<size_t> solve_assignment_problem(const Table<Value>& table)
     {
@@ -1039,7 +1055,7 @@ namespace scorers
         const int d = x->location->duration;
         const int p = x->location->workers_required;
 
-        return 2 * distance(center, x->location->point) - d * p * (p + 4);
+        return -2 * distance(center, x->location->point) + 0 * d * p * (p + 4); // ¯\_(ツ)_/¯
     }
 }
 
@@ -1162,7 +1178,7 @@ inline namespace solvers
             {
                 TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
 
-                for (const Candidate& candidate : candidates)
+                for (const Candidate& candidate : skip<const Candidate>(i, candidates))
                 {
                     const TimeWindow new_time_window = current_time_window.intersect(candidate.time_window);
 
@@ -1238,9 +1254,9 @@ inline namespace solvers
 
             assert(graph.vertices.size() == orders.capacity() + 2);
 
-            for (size_t i = 2; i != graph.vertices.size(); ++i)
+            for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
             {
-                orders.emplace_back(&graph.vertices[i].forward);
+                orders.emplace_back(&full_vertex.forward);
             }
 
             return orders;
