@@ -8,6 +8,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <string_view>
 #include <vector>
 
 #include <cassert>
@@ -729,6 +731,67 @@ inline namespace graph
 
         Graph copy() const;
 
+        void debug_graphviz() const
+        {
+            std::ofstream out("graph.dot");
+
+            const auto print = [&out](auto&& ... args) { (out << ... << args) << "\n"; };
+            const int scale = 50;
+
+            print("digraph G {");
+
+            print("  {");
+            for (const auto& full_vertex : vertices)
+            {
+                const Vertex& v = full_vertex.forward;
+                const Location& loc = *v.location;
+
+                if (&vertices[BACKWARD_BASE] == &full_vertex)
+                {
+                    continue;
+                }
+
+                print
+                (
+                    "    ",
+                    loc.index,
+                    "[",
+                    "shape=point,",
+                    "fontsize=7,",
+                    "xlabel=\"", loc.index, ": [", loc.time_window.from, ";", loc.time_window.to, "] ",
+                        v.earliest_work_start_moment, " d=", loc.duration, " p=", loc.workers_required, "\",",
+                    (loc.is_base() ? "color=\"#AA1010\"," : v.edges.size() == 0 ? "color=\"#AA1010\",width=0.15," : ""),
+                    "pos=\"", scale * loc.point.x, ",", scale * loc.point.y, "\"",
+                    "]"
+                );
+            }
+            print("  }");
+            print("");
+
+            for (const auto& full_vertex : vertices)
+            {
+                const Vertex& a = full_vertex.forward;
+                for (const Edge* edge : full_vertex.forward.edges)
+                {
+                    const Vertex& b = *edge->to;
+
+                    print
+                    (
+                        "  ",
+                        a.location->index, " -> ", b.location->index, " ",
+                        "[",
+                        "arrowsize=0.5,",
+                        "penwidth=0.5,",
+                        "fontsize=10,",
+                        "color=\"#9ACEEB\""
+                        "]"
+                    );
+                }
+            }
+
+            print("}");
+        }
+
         Graph& operator=(Graph&&) = default;
         void operator=(const Graph&) = delete;
     };
@@ -790,6 +853,8 @@ inline namespace graph
             assert(last_arrive_moments[from->location->index] != -1);
             const Moment work_start_moment = std::max(from->location->time_window.from, last_arrive_moments[from->location->index]);
             const Moment work_end_moment = work_start_moment + from->location->duration;
+
+            assert(work_end_moment <= from->location->time_window.to);
 
             for (const Edge* edge : from->edges)
             {
@@ -1147,15 +1212,45 @@ int main(int argc, char** argv)
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
 
-    #ifdef READ_TASK_FROM_FILE
-        assert(argc == 2);
-        std::ifstream input(argv[1]);
+    #ifndef ONLINE_JUDGE
+        const auto ensure = [](bool cond, std::string_view message="")
+        {
+            if (not cond)
+            {
+                throw std::runtime_error(std::string(message));
+            }
+        };
+
+        std::unique_ptr<std::ifstream> input_file = nullptr;
+
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string_view arg_i(argv[i]);
+
+            if (arg_i == "--task")
+            {
+                ensure(argc > i + 1);
+                i += 1;
+                input_file = std::make_unique<std::ifstream>(argv[i]);
+            }
+            else
+            {
+                ensure(false, "unrecognized argument");
+            }
+        }
+
+        std::istream& input = (input_file == nullptr) ? std::cin : *input_file;
     #else
-        std::ifstream& input = std::cin;
+        std::istream& input = std::cin;
     #endif
 
     Processor processor(input);
     processor.run_circuit();
+
+    #ifndef ONLINE_JUDGE
+        processor.graph.debug_graphviz();
+    #endif
+
     std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
