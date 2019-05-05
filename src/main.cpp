@@ -180,7 +180,7 @@ inline namespace lib
         const auto costs = map(values, std::forward<Func>(func));
         std::vector<size_t> indices = iota<size_t>(values.size());
         std::sort(begin(indices), end(indices), [&costs](size_t a, size_t b) { return costs[a] < costs[b]; });
-        values = map(indices, [&values, &indices](size_t i) { return values[indices[i]]; });
+        values = map(indices, [&values](size_t i) { return values[i]; });
     }
 
     template <class Value>
