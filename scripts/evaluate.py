@@ -22,6 +22,7 @@ def parse_args(argv):
     parser.add_argument('executable')
     parser.add_argument('--dataset', required=False)
     parser.add_argument('--count', required=False, default=10, type=int)
+    parser.add_argument('--no-log', required=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -94,9 +95,10 @@ def main(argv):
                 result.clear_previous_output()
             result.print()
 
-    with (TEST_DIR / 'log.txt').open('a') as log:
-        log.write(f'\n{time.strftime("%Y-%m-%d %H:%M")} count={args.count}\n')
-        result.print(file=log)
+    if not args.no_log:
+        with (TEST_DIR / 'log.txt').open('a') as log:
+            log.write(f'\n{time.strftime("%Y-%m-%d %H:%M")} count={args.count}\n')
+            result.print(file=log)
 
 
 if __name__ == '__main__':
