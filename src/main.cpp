@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <numeric>
 #include <string_view>
 #include <vector>
 
@@ -74,6 +75,15 @@ inline namespace lib
             result.emplace_back(func(value));
         }
 
+        return result;
+    }
+
+    template <class T>
+    std::vector<T> iota(size_t n, T start = 0)
+    {
+        std::vector<T> result;
+        result.resize(n);
+        std::iota(begin(result), end(result), start);
         return result;
     }
 
@@ -163,6 +173,15 @@ inline namespace lib
             return values[i * size2 + j];
         }
     };
+
+    template <class T, class Func>
+    void sort_with(std::vector<T>& values, Func&& func)
+    {
+        const auto costs = map(values, std::forward<Func>(func));
+        std::vector<size_t> indices = iota<size_t>(values.size());
+        std::sort(begin(indices), end(indices), [&costs](size_t a, size_t b) { return costs[a] < costs[b]; });
+        values = map(indices, [&values, &indices](size_t i) { return values[indices[i]]; });
+    }
 
     template <class Value>
     std::vector<size_t> solve_assignment_problem(const Table<Value>& table)
@@ -775,7 +794,7 @@ inline namespace graph
                     "fontsize=7,",
                     "xlabel=\"", loc.index, ": [", loc.time_window.from, ";", loc.time_window.to, "] ",
                         v.earliest_work_start_moment, " d=", loc.duration, " p=", loc.workers_required, "\",",
-                    (loc.is_base() ? "color=\"#AA1010\"," : v.edges.size() == 0 ? "color=\"#AA1010\",width=0.15," : ""),
+                    (loc.is_base() ? "color=\"#AA1010\"," : v.edges.empty() ? "color=\"#AA1010\",width=0.15," : ""),
                     "pos=\"", scale * loc.point.x, ",", scale * loc.point.y, "\"",
                     "]"
                 );
@@ -1015,7 +1034,7 @@ namespace scorers
         return distance(a, b) - distance(a, c) - distance(c, b) + d * (p + 4);
     }
 
-    int radial_cost(Vector center, Vertex* x)
+    int radial_cost(Vector center, const Vertex* x)
     {
         const int d = x->location->duration;
         const int p = x->location->workers_required;
@@ -1231,9 +1250,8 @@ inline namespace solvers
         int optimize(Graph& graph)
         {
             std::vector<Vertex*> orders = get_orders(graph);
-            // TODO: accept comparator as a parameter
-            comparators::VertexPtrComparator comparator;
-            std::sort(begin(orders), end(orders), comparator);
+            Vector center = graph.forward_start()->location->point;
+            sort_with(orders, [center](const Vertex* x) { return scorers::radial_cost(center, x); });
 
             int total_reward = 0;
 
