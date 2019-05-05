@@ -1029,7 +1029,7 @@ inline namespace solvers
             return chosen;
         }
 
-        void insert(Graph& graph, Vertex* vertex)
+        int insert(Graph& graph, Vertex* vertex)
         {
             assert(not vertex->location->is_base());
             assert(vertex->edges.empty());
@@ -1038,12 +1038,15 @@ inline namespace solvers
             const std::vector<Candidate> candidates = get_candidates(graph, vertex);
             const std::vector<const Candidate*> chosen = select_from_candidates(candidates, vertex);
 
+            int reward = 0;
+
             if (not chosen.empty())
             {
                 assert(chosen.size() == static_cast<size_t>(vertex->location->workers_required));
 
                 for (const Candidate* candidate : chosen)
                 {
+                    reward += candidate->reward;
                     graph.interpose(candidate->edge, vertex);
                 }
 
@@ -1057,6 +1060,8 @@ inline namespace solvers
             }
 
             assert(0 == Vertex::marked.size);
+
+            return reward;
         }
 
         std::vector<Vertex*> get_orders(Graph& graph)
@@ -1075,23 +1080,26 @@ inline namespace solvers
         }
 
         // TODO: параметризовать
-        void optimize(Graph& graph)
+        int optimize(Graph& graph)
         {
             std::vector<Vertex*> orders = get_orders(graph);
             // TODO: accept comparator as a parameter
             comparators::VertexPtrComparator comparator;
             std::sort(begin(orders), end(orders), comparator);
 
+            int total_reward = 0;
+
             for (Vertex* order : orders)
             {
                 if (order->edges.empty())
                 {
-                    insert(graph, order);
+                    total_reward += insert(graph, order);
                 }
             }
+
+            return total_reward;
         }
     }
-
 }
 
 struct Processor
