@@ -731,9 +731,9 @@ inline namespace graph
 
         Graph copy() const;
 
-        void debug_graphviz() const
+        void dump_graphviz(std::string_view filename = "graph.dot") const
         {
-            std::ofstream out("graph.dot");
+            std::ofstream out(filename.data());
 
             const auto print = [&out](auto&& ... args) { (out << ... << args) << "\n"; };
             const int scale = 50;
@@ -1248,7 +1248,7 @@ int main(int argc, char** argv)
     processor.run_circuit();
 
     #ifndef ONLINE_JUDGE
-        processor.graph.debug_graphviz();
+        processor.graph.dump_graphviz();
     #endif
 
     std::cout << processor.graph;
