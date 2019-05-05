@@ -24,6 +24,7 @@ def parse_args(argv):
     parser.add_argument('--dataset', required=False)
     parser.add_argument('--count', required=False, default=10, type=int)
     parser.add_argument('--no-log', required=False, action='store_true')
+    parser.add_argument('--message', '-m', required=False)
     return parser.parse_args(argv)
 
 
@@ -41,8 +42,6 @@ def format_stats(d):
 
 
 class Result:
-
-
     def __init__(self):
         self.elapsed = []
         self.reward = []
@@ -94,11 +93,14 @@ def main(argv):
 
             if i > 0:
                 result.clear_previous_output()
+                clear_last_lines(1)
+
+            print(f'[{i} / {args.count}]')
             result.print()
 
     if not args.no_log:
         with (EVAL_DIR / 'log.txt').open('a') as log:
-            log.write(f'\n{time.strftime("%Y-%m-%d %H:%M")} count={args.count}\n')
+            log.write(f'\n{time.strftime("%Y-%m-%d %H:%M")} count={args.count}  { "# " + args.message if args.message else "" } \n')
             result.print(file=log)
 
 
