@@ -844,7 +844,7 @@ inline namespace edit
 
     TimeWindow time_window_after_interpose(const Edge* ab, const Vertex* v)
     {
-        Vertex* a = ab->twin->to;
+        Vertex* a = ab->twin->to->twin;
         Vertex* b = ab->to;
 
         return v->location->time_window.intersect
@@ -1084,7 +1084,10 @@ inline namespace solvers
 
             for (Vertex* order : orders)
             {
-                insert(graph, order);
+                if (order->edges.empty())
+                {
+                    insert(graph, order);
+                }
             }
         }
     }
