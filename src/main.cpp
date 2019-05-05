@@ -784,12 +784,11 @@ inline namespace graph
             update_edge(base, edge, twin_moment(edge->twin->earliest_arrive_moment));
         }
 
-        // Note: we are skipping base here, hence -1.
         while (Vertex::marked.size != 0)
         {
             const Vertex* from = Vertex::marked.pop();
-            const Moment work_start_moment = last_arrive_moments[from->location->index];
-            assert(work_start_moment != -1);
+            assert(last_arrive_moments[from->location->index] != -1);
+            const Moment work_start_moment = std::max(from->location->time_window.from, last_arrive_moments[from->location->index]);
             const Moment work_end_moment = work_start_moment + from->location->duration;
 
             for (const Edge* edge : from->edges)
@@ -830,7 +829,7 @@ inline namespace graph
                     break;
                 }
 
-                const Moment start_work_moment = last_arrive_moment[index];
+                const Moment start_work_moment = std::max(current_vertex->location->time_window.from, last_arrive_moment[index]);
                 const Moment end_work_moment = start_work_moment + current_vertex->location->duration;
 
                 assert(current_moment <= start_work_moment);
@@ -1160,6 +1159,6 @@ int main(int argc, char** argv)
     std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
-        std::cout << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds." << std::endl;
+        std::cerr << "Elapsed: " << std::setprecision(2) << std::fixed << timer.seconds_elapsed() << " seconds." << std::endl;
     #endif
 }
