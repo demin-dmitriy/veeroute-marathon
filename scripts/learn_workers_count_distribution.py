@@ -62,6 +62,8 @@ def main(argv):
 						if no_improvement_streak > 15:
 							break
 
+				if best_workers_count == start_search or best_workers_count == 900:
+					print('warning: maybe search segment is too narrow')
 				print(f'n={n}, best={best_workers_count}, searched from {start_search}')
 				start_search = best_workers_count - 20
 				table[n] = best_workers_count
