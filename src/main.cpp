@@ -1124,7 +1124,8 @@ inline namespace solvers
         const size_t empty_route_count = std::min
         (
             graph.task->sum_workers_required,
-            static_cast<size_t>(2 * expected_workers_required(graph))
+            // 1.9 is fine-tuned on eval_100 and validated on generated 1000. Should be re-tuned when algorithm are changed.
+            static_cast<size_t>(1.9 * expected_workers_required(graph))
         );
 
         for (size_t i = 0; i != empty_route_count; ++i)
@@ -1343,7 +1344,6 @@ struct Processor
     {
         generate_empty_routes(graph);
         greedy::optimize(graph);
-//        remove_unprofitable_orders(graph);
         remove_empty_paths(graph);
     }
 };
