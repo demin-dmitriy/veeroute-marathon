@@ -1,6 +1,8 @@
 #ifdef ONLINE_JUDGE
     #pragma GCC optimize ("O3")
-    #define NDEBUG
+    #ifndef NDEBUG
+        #define NDEBUG
+    #endif
 #endif
 
 #include <algorithm>
@@ -19,6 +21,10 @@
 #include <cmath>
 
 constexpr double TIME_LIMIT_SECONDS = 15;
+
+#ifndef ONLINE_JUDGE
+    int WORKERS_COUNT = -1;
+#endif
 
 std::default_random_engine RANDOM_ENGINE(774130);
 
@@ -1124,12 +1130,20 @@ inline namespace solvers
 
     void generate_empty_routes(Graph& graph)
     {
-        const size_t empty_route_count = std::min
+        size_t empty_route_count = std::min
         (
             graph.task->sum_workers_required,
             // 1.9 is fine-tuned on eval_100 and validated on generated 1000. Should be re-tuned when algorithm are changed.
             static_cast<size_t>(1.9 * expected_workers_required(graph))
         );
+
+        #ifndef ONLINE_JUDGE
+            if (WORKERS_COUNT != -1)
+            {
+                assert(WORKERS_COUNT > 0);
+                empty_route_count = std::min(graph.task->sum_workers_required, (size_t) WORKERS_COUNT);
+            }
+        #endif
 
         for (size_t i = 0; i != empty_route_count; ++i)
         {
@@ -1192,11 +1206,13 @@ inline namespace solvers
 
         std::vector<const Candidate*> select_from_candidates(const std::vector<Candidate>& candidates, Vertex* vertex)
         {
+            // TODO: возможно стоит кобинировать несколько стратегий.
+
             assert(0 == Vertex::marked.size);
 
             const size_t workers_required = vertex->location->workers_required;
             const int duration = vertex->location->duration;
-            const int max_attempt_count = 80; // TODO: parameterize
+            const int max_attempt_count = 1; // TODO: parameterize
 
             std::vector<const Candidate*> chosen;
             int reward = -10000; // TODO: parameterize
@@ -1223,7 +1239,7 @@ inline namespace solvers
                         continue;
                     }
 
-                    std::bernoulli_distribution coin_flip(0.9); // TODO: parameterize
+                    std::bernoulli_distribution coin_flip(1); // TODO: parameterize exp(double(- i) / max_attempt_count)
                     if (not coin_flip(RANDOM_ENGINE))
                     {
                         continue;
@@ -1352,6 +1368,12 @@ inline namespace solvers
 
         return total_reward;
     }
+
+    int edge_edge_optimizer(Graph& graph)
+    {
+
+        return 0;
+    }
 }
 
 struct Processor
@@ -1407,6 +1429,12 @@ int main(int argc, char** argv)
             else if (arg_i == "--graphviz")
             {
                 graphviz = true;
+            }
+            else if (arg_i == "--workers-count")
+            {
+                ensure(argc > i + 1);
+                i += 1;
+                WORKERS_COUNT = std::stoi(argv[i]);
             }
             else
             {
