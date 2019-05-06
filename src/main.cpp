@@ -1120,22 +1120,16 @@ inline namespace solvers
     double expected_workers_required(const Graph& graph)
     {
         const double n = graph.task->n;
-        const double average_workers_required = (1. + 8.) / 2.;
-        const double average_duration = (5. + 30.) / 2.;
-        const double average_gap = 100. / (1. + sqrt(n));
-        const double work_time_window_length = 800. - 200.;
+        const double a = 0.2358594030965598;
+        const double b = 54.57148230518328;
+        const double sigma = 13.717673452304112;
 
-        return (n * average_workers_required * (average_duration + average_gap) - average_gap) / work_time_window_length;
+        return a * n + b + sigma;
     }
 
     void generate_empty_routes(Graph& graph)
     {
-        size_t empty_route_count = std::min
-        (
-            graph.task->sum_workers_required,
-            // 1.9 is fine-tuned on eval_100 and validated on generated 1000. Should be re-tuned when algorithm are changed.
-            static_cast<size_t>(1.9 * expected_workers_required(graph))
-        );
+        size_t empty_route_count = std::min(graph.task->sum_workers_required, static_cast<size_t>(expected_workers_required(graph)));
 
         #ifndef ONLINE_JUDGE
             if (WORKERS_COUNT != -1)
