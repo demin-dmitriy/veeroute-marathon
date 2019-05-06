@@ -63,14 +63,14 @@ inline namespace lib
         }
     };
 
-    template <class V, class Func>
-    auto map(const std::vector<V>& values, Func&& func) -> std::vector<decltype(func(std::declval<V>()))>
+    template <class Container, class Func>
+    auto map(Container&& values, Func&& func) -> std::vector<decltype(func(*values.begin()))>
     {
-        using U = decltype(func(std::declval<V>()));
+        using U = decltype(func(*values.begin()));
         std::vector<U> result;
-        result.reserve(values.size());
+        result.reserve(values.end() - values.begin());
 
-        for (const V& value : values)
+        for (auto& value : values)
         {
             result.emplace_back(func(value));
         }
@@ -175,11 +175,11 @@ inline namespace lib
     };
 
     template <class T, class Func>
-    void sort_with(std::vector<T>& values, Func&& func)
+    void sort_rewards_with(std::vector<T>& values, Func&& func)
     {
-        const auto costs = map(values, std::forward<Func>(func));
+        const auto rewards = map(values, std::forward<Func>(func));
         std::vector<size_t> indices = iota<size_t>(values.size());
-        std::sort(begin(indices), end(indices), [&costs](size_t a, size_t b) { return costs[a] < costs[b]; });
+        std::sort(begin(indices), end(indices), [&rewards](size_t a, size_t b) { return rewards[a] > rewards[b]; });
         values = map(indices, [&values](size_t i) { return values[i]; });
     }
 
@@ -285,9 +285,9 @@ inline namespace lib
             { }
 
             auto begin() { return range.rbegin(); }
-            auto begin() const { return range.rbegin(); }
+            auto begin() const { return ((const Range&) range).rbegin(); }
             auto end() { return range.rend(); }
-            auto end() const { return range.rend(); }
+            auto end() const { return ((const Range&) range).rend(); }
         };
 
         return ReversedRange(range);
@@ -371,7 +371,7 @@ inline namespace task
     {
         Vector point;
         int duration;
-        int workers_required;
+        size_t workers_required;
         TimeWindow time_window;
         Index index;
 
@@ -602,7 +602,7 @@ inline namespace graph
             , backward(this, &forward, &location->backward)
         { }
 
-        void mark()
+        void mark_recursively()
         {
             forward.mark_recursively();
             backward.mark_recursively();
@@ -620,6 +620,36 @@ inline namespace graph
             backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
         }
     };
+
+    std::vector<std::pair<Vertex*, Vertex*>> cut_assignment(Vertex* v)
+    {
+        const std::vector<Vertex*> froms = map(v->twin->edges, [](const Edge* edge) { return edge->to->twin; });
+        const std::vector<Vertex*> tos = map(v->edges, [](const Edge* edge) { return edge->to; });
+
+        assert(froms.size() == tos.size());
+        const size_t m = froms.size();
+
+        Table<int> distances(m, m);
+
+        for (size_t i = 0; i != m; ++i)
+        {
+            for (size_t j = 0; j != m; ++j)
+            {
+                distances.at(i, j) = distance(froms[i], tos[j]);
+            }
+        }
+
+        const std::vector<size_t> assignment = solve_assignment_problem(distances);
+
+        std::vector<std::pair<Vertex*, Vertex*>> result;
+
+        for (size_t i = 1; i <= m; ++i)
+        {
+            result.emplace_back(froms[assignment[i] - 1], tos[i - 1]);
+        }
+
+        return result;
+    }
 
     struct Graph
     {
@@ -732,38 +762,7 @@ inline namespace graph
 
         void cut(Vertex* v)
         {
-            // TODO: solving assignment problem, and getting vector of all immediate children can be useful on its own.
-            assert(v->edges.size() == v->twin->edges.size());
-
-            const size_t m = v->edges.size();
-
-            std::vector<Vertex*> froms;
-            std::vector<Vertex*> tos;
-
-            froms.reserve(m);
-            tos.reserve(m);
-
-            for (const Edge* edge : v->edges)
-            {
-                tos.emplace_back(edge->to);
-            }
-
-            for (const Edge* edge : v->twin->edges)
-            {
-                froms.emplace_back(edge->to->twin);
-            }
-
-            Table<int> distances(m, m);
-
-            for (size_t i = 0; i != m; ++i)
-            {
-                for (size_t j = 0; j != m; ++j)
-                {
-                    distances.at(i, j) = distance(froms[i], tos[j]);
-                }
-            }
-
-            std::vector<size_t> assignment = solve_assignment_problem(distances);
+            const auto assignment = cut_assignment(v);
 
             for (Vertex* u : { v, v->twin })
             {
@@ -773,9 +772,12 @@ inline namespace graph
                 }
             }
 
-            for (size_t i = 1; i <= m; ++i)
+            for (auto [from, to] : assignment)
             {
-                link(froms[assignment[i] - 1], tos[i - 1]);
+                Edge* edge = link(from, to);
+                const int dist = distance(from, to);
+                edge->earliest_arrive_moment = from->get_earliest_work_end_moment() + dist;
+                edge->twin->earliest_arrive_moment = to->twin->get_earliest_work_end_moment() + dist;
             }
         }
 
@@ -1019,8 +1021,6 @@ inline namespace graph
 
 inline namespace edit
 {
-
-
     TimeWindow time_window_after_interpose(const Edge* ab, const Vertex* v)
     {
         Vertex* a = ab->twin->to->twin;
@@ -1055,23 +1055,46 @@ namespace scorers
         const int d = x->location->duration;
         const int p = x->location->workers_required;
 
-        return -2 * distance(center, x->location->point) + 0 * d * p * (p + 4); // ¯\_(ツ)_/¯
+        return 2 * distance(center, x->location->point) - d * p * (p + 4);
     }
-}
 
-namespace comparators
-{
-    struct VertexPtrComparator
+    int removal_reward(Vertex* vertex)
     {
-        bool operator()(Vertex* a, Vertex* b) const
+        // TODO: distance не играет по факту роли, если нужно и так и так ждать.
+        assert(vertex->edges.size() == vertex->location->workers_required);
+
+        const int d = vertex->location->duration;
+        const int p = vertex->location->workers_required;
+
+        int reward_now = d * p * (p + 4);
+
+        // TODO: попробовать сделать версию этого, которая основывается на основе значениях динамики
+        for (const Vertex* v : { vertex, vertex->twin })
         {
-            return a < b;
+            for (const Edge* edge : v->edges)
+            {
+                reward_now -= distance(vertex, edge->to);
+            }
         }
-    };
+
+        int reward_after = 0;
+
+        for (auto [from, to] : cut_assignment(vertex))
+        {
+            reward_after -= distance(from, to);
+        }
+
+        return reward_after - reward_now;
+    }
 }
 
 inline namespace solvers
 {
+    std::vector<Vertex*> get_orders(Graph& graph)
+    {
+        return map(skip<FullVertex>(2, graph.vertices), [](FullVertex& full_vertex) { return &full_vertex.forward; });
+    }
+
     void remove_empty_paths(Graph& graph)
     {
         const Vertex* finish = graph.forward_finish();
@@ -1167,7 +1190,7 @@ inline namespace solvers
         {
             assert(0 == Vertex::marked.size);
 
-            const size_t workers_required = static_cast<size_t>(vertex->location->workers_required);
+            const size_t workers_required = vertex->location->workers_required;
             const int duration = vertex->location->duration;
             const int max_attempt_count = 8; // TODO: parameterize
 
@@ -1218,14 +1241,14 @@ inline namespace solvers
             assert(vertex->edges.empty());
             assert(vertex->twin->edges.empty());
 
-            const std::vector<Candidate> candidates = get_candidates(graph, vertex);
-            const std::vector<const Candidate*> chosen = select_from_candidates(candidates, vertex);
+            const std::vector<Candidate> candidates = get_candidates(graph, vertex); // NOTE: customization point (EdgeChooser)
+            const std::vector<const Candidate*> chosen = select_from_candidates(candidates, vertex); // NOTE: customization point (IndependentEdgeSubsetChooser)
 
             int reward = 0;
 
             if (not chosen.empty())
             {
-                assert(chosen.size() == static_cast<size_t>(vertex->location->workers_required));
+                assert(chosen.size() == vertex->location->workers_required);
 
                 for (const Candidate* candidate : chosen)
                 {
@@ -1233,8 +1256,8 @@ inline namespace solvers
                     graph.interpose(candidate->edge, vertex);
                 }
 
-                assert(vertex->edges.size() == static_cast<size_t>(vertex->location->workers_required));
-                assert(vertex->twin->edges.size() == static_cast<size_t>(vertex->location->workers_required));
+                assert(vertex->edges.size() == vertex->location->workers_required);
+                assert(vertex->twin->edges.size() == vertex->location->workers_required);
 
                 vertex->mark_recursively();
                 vertex->twin->mark_recursively();
@@ -1247,27 +1270,11 @@ inline namespace solvers
             return reward;
         }
 
-        std::vector<Vertex*> get_orders(Graph& graph)
-        {
-            std::vector<Vertex*> orders;
-            orders.reserve(graph.task->n - 1);
-
-            assert(graph.vertices.size() == orders.capacity() + 2);
-
-            for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
-            {
-                orders.emplace_back(&full_vertex.forward);
-            }
-
-            return orders;
-        }
-
-        // TODO: параметризовать
         int optimize(Graph& graph)
         {
             std::vector<Vertex*> orders = get_orders(graph);
-            Vector center = graph.forward_start()->location->point;
-            sort_with(orders, [center](const Vertex* x) { return scorers::radial_cost(center, x); });
+            const Vector center = graph.forward_start()->location->point;
+            sort_rewards_with(orders, [center](const Vertex* x) { return distance(center, x->location->point); }); // NOTE: customization point (OrderChooser)
 
             int total_reward = 0;
 
@@ -1275,12 +1282,50 @@ inline namespace solvers
             {
                 if (order->edges.empty())
                 {
-                    total_reward += insert(graph, order);
+                    total_reward += insert(graph, order); // Note: customization point: (Inserter)
                 }
             }
 
             return total_reward;
         }
+    }
+
+    int remove_unprofitable_orders(Graph& graph)
+    {
+        assert(0 == Vertex::marked.size);
+
+        int total_reward = 0;
+        bool changed = true;
+
+        while (changed)
+        {
+            changed = false;
+
+            for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
+            {
+                Vertex* vertex = &full_vertex.forward;
+
+                if (not vertex->edges.empty())
+                {
+                    assert(vertex->edges.size() == vertex->location->workers_required);
+                    const int reward = scorers::removal_reward(vertex); // NOTE: this reward is customization point
+
+                    // NOTE: this condition is customization point (e.g. choose temperature).
+                    if (reward >= 0)
+                    {
+                        full_vertex.mark_recursively();
+                        total_reward += reward;
+                        graph.cut(vertex); // NOTE: recalculating assignment twice here, but it doesn't really matter
+                        changed = true;
+                        assert(vertex->edges.empty());
+                    }
+                }
+            }
+        }
+
+        Vertex::recalculate_all_marked();
+
+        return total_reward;
     }
 }
 
@@ -1298,6 +1343,7 @@ struct Processor
     {
         generate_empty_routes(graph);
         greedy::optimize(graph);
+//        remove_unprofitable_orders(graph);
         remove_empty_paths(graph);
     }
 };
