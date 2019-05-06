@@ -10,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <random>
 #include <string_view>
 #include <vector>
 
@@ -18,6 +19,8 @@
 #include <cmath>
 
 constexpr double TIME_LIMIT_SECONDS = 15;
+
+std::default_random_engine RANDOM_ENGINE(774130);
 
 inline namespace lib
 {
@@ -1193,16 +1196,20 @@ inline namespace solvers
 
             const size_t workers_required = vertex->location->workers_required;
             const int duration = vertex->location->duration;
-            const int max_attempt_count = 8; // TODO: parameterize
+            const int max_attempt_count = 80; // TODO: parameterize
 
             std::vector<const Candidate*> chosen;
-            chosen.reserve(workers_required);
+            int reward = -10000; // TODO: parameterize
+
+            std::vector<const Candidate*> current_chosen;
+            current_chosen.reserve(workers_required);
+            //
 
             for (int i = 0; i != max_attempt_count; ++i)
             {
                 TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
 
-                for (const Candidate& candidate : skip<const Candidate>(i, candidates))
+                for (const Candidate& candidate : candidates)
                 {
                     const TimeWindow new_time_window = current_time_window.intersect(candidate.time_window);
 
@@ -1216,21 +1223,38 @@ inline namespace solvers
                         continue;
                     }
 
+                    std::bernoulli_distribution coin_flip(0.9); // TODO: parameterize
+                    if (not coin_flip(RANDOM_ENGINE))
+                    {
+                        continue;
+                    }
+
                     candidate.edge->to->mark_recursively();
                     candidate.edge->twin->to->mark_recursively();
 
                     current_time_window = new_time_window;
-                    chosen.emplace_back(&candidate);
+                    current_chosen.emplace_back(&candidate);
 
-                    if (chosen.size() == workers_required)
+                    if (current_chosen.size() == workers_required)
                     {
-                        // Keep vertices marked because they're exactly those which need to be recomputed.
-                        return chosen;
+                        int current_reward = 0;
+                        for (const Candidate* candidate : current_chosen)
+                        {
+                            current_reward += candidate->reward;
+                        }
+
+                        if (current_reward > reward)
+                        {
+                            chosen = std::move(current_chosen);
+                            reward = current_reward;
+                        }
+
+                        break;
                     }
                 }
 
                 Vertex::unmark_all();
-                chosen.clear();
+                current_chosen.clear();
             }
 
             return chosen;
