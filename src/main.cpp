@@ -1,3 +1,34 @@
+/*
+
+
+
+
+
+
+
+
+                           Не подглядывай
+
+
+                      , ; ,   .-'"""'-.   , ; ,
+                      \\|/  .'         '.  \|//
+                       \-;-/   ()   ()   \-;-/
+                       // ;               ; \\
+                      //__; :.         .; ;__\\
+                     `-----\'.'-.....-'.'/-----'
+                            '.'.-.-,_.'.'
+                              '(  (..-'
+                                '-'
+
+
+
+
+
+
+
+
+ */
+
 #ifdef ONLINE_JUDGE
     #pragma GCC optimize ("O3")
     #ifndef NDEBUG
@@ -500,6 +531,8 @@ inline namespace graph
                 = 10000
             #endif
             ;
+
+        void update(Vertex* source);
     };
 
     struct FullVertex;
@@ -512,14 +545,15 @@ inline namespace graph
         static inline CheapStack<Vertex*, 2 * (MAX_LOCATION_COUNT + 1)> marked; // Stores both forward and backward vertices
         static inline Version current_global_version = 1;
 
-        Moment earliest_work_start_moment; // TODO: maybe end_moment is more convenient to work with
+        // TODO: maybe separate class for storing dynamics
+        Moment earliest_work_end_moment; // TODO: earliest_work_end_moment is more convenient to work with
         Version version;
         const Location* const location;
         Vertex* const twin;
         std::vector<Edge*> edges;
 
         explicit Vertex(FullVertex* parent, Vertex* twin, const Location* location)
-            : earliest_work_start_moment(-1)
+            : earliest_work_end_moment(-1)
             , version(0)
             , location(location)
             , twin(twin)
@@ -560,28 +594,32 @@ inline namespace graph
             }
         }
 
+        Moment get_earliest_work_start_moment() const
+        {
+            return earliest_work_end_moment - location->duration;
+        }
+
         Moment get_earliest_work_end_moment() const
         {
-            return earliest_work_start_moment + location->duration;
+            return earliest_work_end_moment;
         }
 
         void recalculate()
         {
-            earliest_work_start_moment = location->time_window.from;
+            Moment earliest_work_start_moment = location->time_window.from;
 
             for (const Edge* twin_edge : twin->edges)
             {
                 earliest_work_start_moment = std::max(earliest_work_start_moment, twin_edge->twin->earliest_arrive_moment);
             }
 
-            const Moment earliest_work_end_moment = get_earliest_work_end_moment();
+            earliest_work_end_moment = earliest_work_start_moment + location->duration;
 
             assert(earliest_work_end_moment <= location->time_window.to);
 
             for (Edge* edge : edges)
             {
-                // TODO: this computation might be needed when new edge is added
-                edge->earliest_arrive_moment = earliest_work_end_moment + distance(this, edge->to);
+                edge->update(this);
             }
         }
 
@@ -595,6 +633,11 @@ inline namespace graph
             current_global_version += 1;
         }
     };
+
+    void Edge::update(Vertex* source)
+    {
+        earliest_arrive_moment = source->get_earliest_work_end_moment() + distance(source, to);
+    }
 
     int distance(const Vertex* a, const Vertex* b)
     {
@@ -623,11 +666,11 @@ inline namespace graph
             backward.recalculate();
         }
 
-        void copy_dynamics_from(const FullVertex& other)
-        {
-            forward.earliest_work_start_moment = other.forward.earliest_work_start_moment;
-            backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
-        }
+//        void copy_dynamics_from(const FullVertex& other)
+//        {
+//            forward.earliest_work_start_moment = other.forward.earliest_work_start_moment;
+//            backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
+//        }
     };
 
     std::vector<std::pair<Vertex*, Vertex*>> cut_assignment(Vertex* v)
@@ -784,10 +827,23 @@ inline namespace graph
             for (auto [from, to] : assignment)
             {
                 Edge* edge = link(from, to);
-                const int dist = distance(from, to);
-                edge->earliest_arrive_moment = from->get_earliest_work_end_moment() + dist;
-                edge->twin->earliest_arrive_moment = to->twin->get_earliest_work_end_moment() + dist;
+                edge->earliest_arrive_moment = from->get_earliest_work_end_moment() + distance(from, to);
+                edge->twin->earliest_arrive_moment = to->twin->get_earliest_work_end_moment() + distance(from, to);
             }
+        }
+
+        void two_opt_swap(Edge* a, Edge* b)
+        {
+            std::swap
+            (
+                a->to->twin->edges[a->twin->index],
+                b->to->twin->edges[b->twin->index]
+            );
+
+            std::swap(a->twin->index, b->twin->index);
+            std::swap(a->to, b->to);
+
+
         }
 
         Graph copy() const;
@@ -820,7 +876,7 @@ inline namespace graph
                     "shape=point,",
                     "fontsize=7,",
                     "xlabel=\"", loc.index, ": [", loc.time_window.from, ";", loc.time_window.to, "] ",
-                        v.earliest_work_start_moment, " d=", loc.duration, " p=", loc.workers_required, "\",",
+                        v.get_earliest_work_start_moment(), " d=", loc.duration, " p=", loc.workers_required, "\",",
                     (loc.is_base() ? "color=\"#AA1010\"," : v.edges.empty() ? "color=\"#AA1010\",width=0.15," : ""),
                     "pos=\"", scale * loc.point.x, ",", scale * loc.point.y, "\"",
                     "]"
@@ -908,12 +964,12 @@ inline namespace graph
         {
             Vertex* v = Vertex::marked.pop();
 
-            Moment vertex_dynamic_before = v->earliest_work_start_moment;
+            Moment vertex_dynamic_before = v->earliest_work_end_moment;
             std::vector<int> edge_dynamic_before = map(v->edges, [](Edge* edge) { return edge->earliest_arrive_moment; });
 
             v->recalculate();
 
-            Moment vertex_dynamic_after = v->earliest_work_start_moment;
+            Moment vertex_dynamic_after = v->earliest_work_end_moment;
             std::vector<int> edge_dynamic_after = map(v->edges, [](Edge* edge) { return edge->earliest_arrive_moment; });
 
             if (vertex_dynamic_before != vertex_dynamic_after or edge_dynamic_before != edge_dynamic_after)
@@ -1206,7 +1262,7 @@ inline namespace solvers
 
             const size_t workers_required = vertex->location->workers_required;
             const int duration = vertex->location->duration;
-            const int max_attempt_count = 1; // TODO: parameterize
+            const int max_attempt_count = 80; // TODO: parameterize
 
             std::vector<const Candidate*> chosen;
             int reward = -10000; // TODO: parameterize
@@ -1233,7 +1289,7 @@ inline namespace solvers
                         continue;
                     }
 
-                    std::bernoulli_distribution coin_flip(1); // TODO: parameterize exp(double(- i) / max_attempt_count)
+                    std::bernoulli_distribution coin_flip(0.9); // TODO: parameterize // exp(double(- i) / max_attempt_count)
                     if (not coin_flip(RANDOM_ENGINE))
                     {
                         continue;
