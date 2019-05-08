@@ -567,7 +567,24 @@ inline namespace graph
             return false;
         }
 
-        void mark_recursively(Span<const size_t> marked_versions = std::array<size_t, 1> { current_global_version })
+        void mark_recursively()
+        {
+            if (not is_marked())
+            {
+                version = current_global_version;
+
+                for (const Edge* edge : edges)
+                {
+                    edge->to->mark_recursively();
+                }
+
+                marked.push(this);
+            }
+        }
+
+        // Both overloads could be written in single function, however int that variant passing an extra argument here will add about
+        // 5% overhead to the whole solution. Hence we make two overloads, so we don't pay the price when we use single version.
+        void mark_recursively(const Span<const size_t>& marked_versions)
         {
             if (not is_marked(marked_versions))
             {
