@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <initializer_list>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -500,6 +501,8 @@ inline namespace graph
                 = 10000
             #endif
             ;
+
+        void update(Vertex* source);
     };
 
     struct FullVertex;
@@ -512,14 +515,15 @@ inline namespace graph
         static inline CheapStack<Vertex*, 2 * (MAX_LOCATION_COUNT + 1)> marked; // Stores both forward and backward vertices
         static inline Version current_global_version = 1;
 
-        Moment earliest_work_start_moment; // TODO: maybe end_moment is more convenient to work with
+        // TODO: maybe separate class for storing dynamics
+        Moment earliest_work_end_moment; // TODO: earliest_work_end_moment is more convenient to work with
         Version version;
         const Location* const location;
         Vertex* const twin;
         std::vector<Edge*> edges;
 
-        explicit Vertex(FullVertex* parent, Vertex* twin, const Location* location)
-            : earliest_work_start_moment(-1)
+        explicit Vertex(Vertex* twin, const Location* location)
+            : earliest_work_end_moment(-1)
             , version(0)
             , location(location)
             , twin(twin)
@@ -540,9 +544,16 @@ inline namespace graph
             marked.clear();
         }
 
-        bool is_marked() const
+        bool is_marked(std::initializer_list<size_t> versions = { current_global_version }) const
         {
-            return version == current_global_version;
+            for (size_t marked_version : versions)
+            {
+                if (version == marked_version)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         void mark_recursively()
@@ -560,28 +571,33 @@ inline namespace graph
             }
         }
 
+
+        Moment get_earliest_work_start_moment() const
+        {
+            return earliest_work_end_moment - location->duration;
+        }
+
         Moment get_earliest_work_end_moment() const
         {
-            return earliest_work_start_moment + location->duration;
+            return earliest_work_end_moment;
         }
 
         void recalculate()
         {
-            earliest_work_start_moment = location->time_window.from;
+            Moment earliest_work_start_moment = location->time_window.from;
 
             for (const Edge* twin_edge : twin->edges)
             {
                 earliest_work_start_moment = std::max(earliest_work_start_moment, twin_edge->twin->earliest_arrive_moment);
             }
 
-            const Moment earliest_work_end_moment = get_earliest_work_end_moment();
+            earliest_work_end_moment = earliest_work_start_moment + location->duration;
 
             assert(earliest_work_end_moment <= location->time_window.to);
 
             for (Edge* edge : edges)
             {
-                // TODO: this computation might be needed when new edge is added
-                edge->earliest_arrive_moment = earliest_work_end_moment + distance(this, edge->to);
+                edge->update(this);
             }
         }
 
@@ -596,6 +612,11 @@ inline namespace graph
         }
     };
 
+    void Edge::update(Vertex* source)
+    {
+        earliest_arrive_moment = source->get_earliest_work_end_moment() + distance(source, to);
+    }
+
     int distance(const Vertex* a, const Vertex* b)
     {
         return distance(a->location, b->location);
@@ -607,8 +628,8 @@ inline namespace graph
         Vertex backward;
 
         explicit FullVertex(const FullLocation* location)
-            : forward(this, &backward, &location->forward)
-            , backward(this, &forward, &location->backward)
+            : forward(&backward, &location->forward)
+            , backward(&forward, &location->backward)
         { }
 
         void mark_recursively()
@@ -623,11 +644,11 @@ inline namespace graph
             backward.recalculate();
         }
 
-        void copy_dynamics_from(const FullVertex& other)
-        {
-            forward.earliest_work_start_moment = other.forward.earliest_work_start_moment;
-            backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
-        }
+//        void copy_dynamics_from(const FullVertex& other)
+//        {
+//            forward.earliest_work_start_moment = other.forward.earliest_work_start_moment;
+//            backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
+//        }
     };
 
     std::vector<std::pair<Vertex*, Vertex*>> cut_assignment(Vertex* v)
@@ -763,8 +784,8 @@ inline namespace graph
             Edge* ac = link(a, c);
             Edge* cb = link(c, b);
 
-            ac->earliest_arrive_moment = a->get_earliest_work_end_moment() + distance(a, c);
-            cb->twin->earliest_arrive_moment = b->twin->get_earliest_work_end_moment() + distance(b, c);
+            ac->update(a);
+            cb->twin->update(b->twin);
 
             assert(c->edges.size() == c->twin->edges.size());
         }
@@ -784,10 +805,23 @@ inline namespace graph
             for (auto [from, to] : assignment)
             {
                 Edge* edge = link(from, to);
-                const int dist = distance(from, to);
-                edge->earliest_arrive_moment = from->get_earliest_work_end_moment() + dist;
-                edge->twin->earliest_arrive_moment = to->twin->get_earliest_work_end_moment() + dist;
+                edge->update(from);
+                edge->twin->update(to->twin);
             }
+        }
+
+        void two_opt_swap(Edge* a, Edge* b)
+        {
+            std::swap
+            (
+                a->to->twin->edges[a->twin->index],
+                b->to->twin->edges[b->twin->index]
+            );
+
+            std::swap(a->twin->index, b->twin->index);
+            std::swap(a->to, b->to);
+
+
         }
 
         Graph copy() const;
@@ -820,7 +854,7 @@ inline namespace graph
                     "shape=point,",
                     "fontsize=7,",
                     "xlabel=\"", loc.index, ": [", loc.time_window.from, ";", loc.time_window.to, "] ",
-                        v.earliest_work_start_moment, " d=", loc.duration, " p=", loc.workers_required, "\",",
+                        v.get_earliest_work_start_moment(), " d=", loc.duration, " p=", loc.workers_required, "\",",
                     (loc.is_base() ? "color=\"#AA1010\"," : v.edges.empty() ? "color=\"#AA1010\",width=0.15," : ""),
                     "pos=\"", scale * loc.point.x, ",", scale * loc.point.y, "\"",
                     "]"
@@ -908,12 +942,12 @@ inline namespace graph
         {
             Vertex* v = Vertex::marked.pop();
 
-            Moment vertex_dynamic_before = v->earliest_work_start_moment;
+            Moment vertex_dynamic_before = v->earliest_work_end_moment;
             std::vector<int> edge_dynamic_before = map(v->edges, [](Edge* edge) { return edge->earliest_arrive_moment; });
 
             v->recalculate();
 
-            Moment vertex_dynamic_after = v->earliest_work_start_moment;
+            Moment vertex_dynamic_after = v->earliest_work_end_moment;
             std::vector<int> edge_dynamic_after = map(v->edges, [](Edge* edge) { return edge->earliest_arrive_moment; });
 
             if (vertex_dynamic_before != vertex_dynamic_after or edge_dynamic_before != edge_dynamic_after)
@@ -1099,9 +1133,33 @@ namespace scorers
 
 inline namespace solvers
 {
-    std::vector<Vertex*> get_orders(Graph& graph)
+    std::vector<Vertex*> get_all_orders(Graph& graph)
     {
         return map(skip<FullVertex>(2, graph.vertices), [](FullVertex& full_vertex) { return &full_vertex.forward; });
+    }
+
+    std::vector<Vertex*> get_unresolved_orders(Graph& graph)
+    {
+        std::vector<Vertex*> orders;
+        orders.reserve(graph.task->n);
+
+        for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
+        {
+            if (full_vertex.forward.edges.empty())
+            {
+                orders.emplace_back(&full_vertex.forward);
+            }
+        }
+
+        return orders;
+    }
+
+    template <class Scorer>
+    std::vector<Vertex*> get_sorted_unresolved_orders(Graph& graph, Scorer&& scorer)
+    {
+        std::vector<Vertex*> orders = get_unresolved_orders(graph);
+        sort_rewards_with(orders, std::forward<Scorer>(scorer));
+        return orders;
     }
 
     void remove_empty_paths(Graph& graph)
@@ -1198,169 +1256,200 @@ inline namespace solvers
             return candidates;
         }
 
-        std::vector<const Candidate*> select_from_candidates(const std::vector<Candidate>& candidates, Vertex* vertex)
+        struct EdgesSelector
         {
-            // TODO: возможно стоит кобинировать несколько стратегий.
+            int attempt_count;
+            int min_reward_threshold;
+            double accept_probability;
+            size_t max_prefix_size;
+            double weight_power;
 
-            assert(0 == Vertex::marked.size);
-
-            const size_t workers_required = vertex->location->workers_required;
-            const int duration = vertex->location->duration;
-            const int max_attempt_count = 1; // TODO: parameterize
-
-            std::vector<const Candidate*> chosen;
-            int reward = -10000; // TODO: parameterize
-
-            std::vector<const Candidate*> current_chosen;
-            current_chosen.reserve(workers_required);
-            //
-
-            for (int i = 0; i != max_attempt_count; ++i)
+            std::vector<const Candidate*> operator()(std::vector<Candidate>& candidates, Vertex* vertex)
             {
-                TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
+                assert(0 == Vertex::marked.size);
 
-                for (const Candidate& candidate : candidates)
+                const size_t workers_required = vertex->location->workers_required;
+                const int duration = vertex->location->duration;
+
+                std::vector<const Candidate*> best_chosen;
+                int best_reward = min_reward_threshold;
+
+                std::vector<const Candidate*> current_chosen;
+                current_chosen.reserve(workers_required);
+
+                for (int i = 0; i != attempt_count; ++i)
                 {
-                    const TimeWindow new_time_window = current_time_window.intersect(candidate.time_window);
+                    TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
 
-                    if (new_time_window.length() < duration)
+                    for (const Candidate& candidate : candidates)
                     {
-                        continue;
-                    }
+                        const TimeWindow new_time_window = current_time_window.intersect(candidate.time_window);
 
-                    if (candidate.edge->twin->to->twin->is_marked() or candidate.edge->to->twin->is_marked())
-                    {
-                        continue;
-                    }
-
-                    std::bernoulli_distribution coin_flip(1); // TODO: parameterize exp(double(- i) / max_attempt_count)
-                    if (not coin_flip(RANDOM_ENGINE))
-                    {
-                        continue;
-                    }
-
-                    candidate.edge->to->mark_recursively();
-                    candidate.edge->twin->to->mark_recursively();
-
-                    current_time_window = new_time_window;
-                    current_chosen.emplace_back(&candidate);
-
-                    if (current_chosen.size() == workers_required)
-                    {
-                        int current_reward = 0;
-                        for (const Candidate* candidate : current_chosen)
+                        if (new_time_window.length() < duration)
                         {
-                            current_reward += candidate->reward;
+                            continue;
                         }
 
-                        if (current_reward > reward)
+                        if (candidate.edge->twin->to->twin->is_marked() or candidate.edge->to->twin->is_marked())
                         {
-                            chosen = std::move(current_chosen);
-                            reward = current_reward;
+                            continue;
                         }
 
-                        break;
+                        std::bernoulli_distribution coin_flip(accept_probability);
+                        if (not coin_flip(RANDOM_ENGINE))
+                        {
+                            continue;
+                        }
+
+                        candidate.edge->to->mark_recursively();
+                        candidate.edge->twin->to->mark_recursively();
+
+                        current_time_window = new_time_window;
+                        current_chosen.emplace_back(&candidate);
+
+                        if (current_chosen.size() == workers_required)
+                        {
+                            int current_reward = 0;
+                            for (const Candidate* candidate : current_chosen)
+                            {
+                                current_reward += candidate->reward;
+                            }
+
+                            if (current_reward > best_reward)
+                            {
+                                best_chosen = std::move(current_chosen);
+                                best_reward = current_reward;
+                            }
+
+                            break;
+                        }
                     }
+
+                    Vertex::unmark_all();
+                    current_chosen.clear();
                 }
 
-                Vertex::unmark_all();
-                current_chosen.clear();
+                return best_chosen;
             }
+        };
 
-            return chosen;
-        }
-
-        int insert(Graph& graph, Vertex* vertex)
+        template <class Strategies>
+        struct Inserter
         {
-            assert(not vertex->location->is_base());
-            assert(vertex->edges.empty());
-            assert(vertex->twin->edges.empty());
+            Strategies strategies;
 
-            const std::vector<Candidate> candidates = get_candidates(graph, vertex); // NOTE: customization point (EdgeChooser)
-            const std::vector<const Candidate*> chosen = select_from_candidates(candidates, vertex); // NOTE: customization point (IndependentEdgeSubsetChooser)
-
-            int reward = 0;
-
-            if (not chosen.empty())
+            int operator()(Graph& graph, Vertex* vertex)
             {
-                assert(chosen.size() == vertex->location->workers_required);
+                assert(not vertex->location->is_base());
+                assert(vertex->edges.empty());
+                assert(vertex->twin->edges.empty());
 
-                for (const Candidate* candidate : chosen)
+                // NOTE: this could be a customization point, but probably it isn't needed.
+                std::vector<Candidate> candidates = get_candidates(graph, vertex);
+                const std::vector<const Candidate*> chosen = strategies.select_edges(candidates, vertex);
+
+                int reward = 0;
+
+                if (not chosen.empty())
                 {
-                    reward += candidate->reward;
-                    graph.interpose(candidate->edge, vertex);
+                    assert(chosen.size() == vertex->location->workers_required);
+
+                    for (const Candidate* candidate : chosen)
+                    {
+                        reward += candidate->reward;
+                        graph.interpose(candidate->edge, vertex);
+                    }
+
+                    assert(vertex->edges.size() == vertex->location->workers_required);
+                    assert(vertex->twin->edges.size() == vertex->location->workers_required);
+
+                    vertex->mark_recursively();
+                    vertex->twin->mark_recursively();
+
+                    Vertex::recalculate_all_marked();
                 }
 
-                assert(vertex->edges.size() == vertex->location->workers_required);
-                assert(vertex->twin->edges.size() == vertex->location->workers_required);
+                assert(0 == Vertex::marked.size);
 
-                vertex->mark_recursively();
-                vertex->twin->mark_recursively();
-
-                Vertex::recalculate_all_marked();
+                return reward;
             }
+        };
 
-            assert(0 == Vertex::marked.size);
-
-            return reward;
-        }
-
-        int optimize(Graph& graph)
+        template <class Strategies>
+        struct Greedy
         {
-            std::vector<Vertex*> orders = get_orders(graph);
-            const Vector center = graph.forward_start()->location->point;
-            sort_rewards_with(orders, [center](const Vertex* x) { return distance(center, x->location->point); }); // NOTE: customization point (OrderChooser)
+            Strategies strategies;
+
+            int operator()(Graph& graph)
+            {
+                int total_reward = 0;
+
+                for (Vertex* order : strategies.choose_orders(graph))
+                {
+                    assert(order->edges.empty());
+                    total_reward += strategies.insert(graph, order);
+                }
+
+                return total_reward;
+            }
+        };
+
+        struct InserterStrategies
+        {
+            EdgesSelector select_edges;
+        };
+
+        struct GreedyStrategies
+        {
+            static inline const auto choose_orders = [](Graph& graph) -> std::vector<Vertex*>
+            {
+                const Vector center = graph.forward_start()->location->point;
+                return get_sorted_unresolved_orders(graph, [center](const Vertex* x) { return distance(center, x->location->point); });
+            };
+
+            Inserter<InserterStrategies> insert;
+        };
+    }
+
+    namespace ruin
+    {
+        int remove_unprofitable_orders(Graph& graph)
+        {
+            assert(0 == Vertex::marked.size);
 
             int total_reward = 0;
+            bool changed = true;
 
-            for (Vertex* order : orders)
+            while (changed)
             {
-                if (order->edges.empty())
+                changed = false;
+
+                for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
                 {
-                    total_reward += insert(graph, order); // Note: customization point: (Inserter)
+                    Vertex* vertex = &full_vertex.forward;
+
+                    if (not vertex->edges.empty())
+                    {
+                        assert(vertex->edges.size() == vertex->location->workers_required);
+                        const int reward = scorers::removal_reward(vertex); // NOTE: this reward is customization point
+
+                        // NOTE: this condition is customization point (e.g. choose temperature).
+                        if (reward >= 0)
+                        {
+                            full_vertex.mark_recursively();
+                            total_reward += reward;
+                            graph.cut(vertex); // NOTE: recalculating assignment twice here, but it doesn't really matter
+                            changed = true;
+                            assert(vertex->edges.empty());
+                        }
+                    }
                 }
             }
+
+            Vertex::recalculate_all_marked();
 
             return total_reward;
         }
-    }
-
-    int remove_unprofitable_orders(Graph& graph)
-    {
-        assert(0 == Vertex::marked.size);
-
-        int total_reward = 0;
-        bool changed = true;
-
-        while (changed)
-        {
-            changed = false;
-
-            for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
-            {
-                Vertex* vertex = &full_vertex.forward;
-
-                if (not vertex->edges.empty())
-                {
-                    assert(vertex->edges.size() == vertex->location->workers_required);
-                    const int reward = scorers::removal_reward(vertex); // NOTE: this reward is customization point
-
-                    // NOTE: this condition is customization point (e.g. choose temperature).
-                    if (reward >= 0)
-                    {
-                        full_vertex.mark_recursively();
-                        total_reward += reward;
-                        graph.cut(vertex); // NOTE: recalculating assignment twice here, but it doesn't really matter
-                        changed = true;
-                        assert(vertex->edges.empty());
-                    }
-                }
-            }
-        }
-
-        Vertex::recalculate_all_marked();
-
-        return total_reward;
     }
 
     int edge_edge_optimizer(Graph& graph)
@@ -1382,8 +1471,22 @@ struct Processor
 
     void run_circuit()
     {
+        greedy::GreedyStrategies strategies {
+            .insert = {
+                .strategies = {
+                    .select_edges = {
+                        .attempt_count = 80,
+                        .min_reward_threshold = -10000,
+                        .accept_probability = 0.9,
+                        .max_prefix_size = 100,
+                        .weight_power = 2
+                    }
+                }
+            }
+        };
+
         generate_empty_routes(graph);
-        greedy::optimize(graph);
+        greedy::Greedy<greedy::GreedyStrategies>{strategies}(graph);
         remove_empty_paths(graph);
     }
 };
