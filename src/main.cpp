@@ -141,19 +141,30 @@ inline namespace lib
     template <class T>
     struct Span
     {
-        T* data;
-        size_t size;
+        T* m_data;
+        size_t m_size;
+
 
         template <class Container>
-        explicit Span(Container& container)
-            : data(container.data())
-            , size(container.size())
+        Span(Container&& container)
+            : m_data(container.data())
+            , m_size(container.size())
         { }
 
-        T* begin() { return data; }
-        T* end() { return data + size; }
-        const T* begin() const { return data; }
-        const T* end() const { return data + size; }
+        T* data() const
+        {
+            return m_data;
+        }
+
+        size_t size() const
+        {
+            return m_size;
+        }
+
+        T* begin() { return m_data; }
+        T* end() { return m_data + m_size; }
+        const T* begin() const { return m_data; }
+        const T* end() const { return m_data + m_size; }
     };
 
     template <class Value>
@@ -199,12 +210,12 @@ inline namespace lib
         Span<T> span(container);
         if (k >= container.size())
         {
-            span.size = 0;
+            span.m_size = 0;
         }
         else
         {
-            span.data += k;
-            span.size -= k;
+            span.m_data += k;
+            span.m_size -= k;
         }
         return span;
     }
@@ -544,9 +555,9 @@ inline namespace graph
             marked.clear();
         }
 
-        bool is_marked(std::initializer_list<size_t> versions = { current_global_version }) const
+        bool is_marked(Span<const size_t> marked_versions = std::array<size_t, 1> { current_global_version }) const
         {
-            for (size_t marked_version : versions)
+            for (size_t marked_version : marked_versions)
             {
                 if (version == marked_version)
                 {
@@ -556,21 +567,20 @@ inline namespace graph
             return false;
         }
 
-        void mark_recursively()
+        void mark_recursively(Span<const size_t> marked_versions = std::array<size_t, 1> { current_global_version })
         {
-            if (not is_marked())
+            if (not is_marked(marked_versions))
             {
                 version = current_global_version;
 
                 for (const Edge* edge : edges)
                 {
-                    edge->to->mark_recursively();
+                    edge->to->mark_recursively(marked_versions);
                 }
 
                 marked.push(this);
             }
         }
-
 
         Moment get_earliest_work_start_moment() const
         {
