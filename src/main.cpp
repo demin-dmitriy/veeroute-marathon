@@ -7,13 +7,16 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <fstream>
 #include <initializer_list>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <queue>
 #include <random>
+#include <set>
 #include <string_view>
 #include <vector>
 
@@ -47,6 +50,8 @@ inline namespace lib
 
     const Timer timer;
 
+    enum Bool : bool { TRUE = true, FALSE = false };
+
     template <class T, size_t MAX_SIZE>
     struct CheapStack
     {
@@ -57,7 +62,7 @@ inline namespace lib
         {
             elements[size] = std::move(value);
             size += 1;
-            assert(size < MAX_SIZE);
+            assert(size <= MAX_SIZE);
         }
 
         T pop()
@@ -65,6 +70,36 @@ inline namespace lib
             assert(size > 0);
             size -= 1;
             return std::move(elements[size]);
+        }
+
+        T& operator[](size_t i)
+        {
+            assert(i < size);
+            return elements[i];
+        }
+
+        const T& operator[](size_t i) const
+        {
+            assert(i < size);
+            return elements[i];
+        }
+
+        void swap_remove(size_t index)
+        {
+            using std::swap;
+            assert(index < size);
+            swap(elements[index], elements[size - 1]);
+            size -= 1;
+        }
+
+        auto begin() { return elements.begin(); }
+        auto begin() const { return elements.begin(); }
+        auto end() { return elements.begin() + size; }
+        auto end() const { return elements.begin() + size; }
+
+        bool empty() const
+        {
+            return 0 == size;
         }
 
         void clear()
@@ -106,14 +141,12 @@ inline namespace lib
     template <class T>
     struct Pool
     {
-        size_t size;
         size_t next_free;
         std::vector<T> storage;
         std::vector<T*> free;
 
         explicit Pool(size_t size)
-            : size(size)
-            , next_free(0)
+            : next_free(0)
         {
             storage.resize(size);
             free.resize(size);
@@ -122,6 +155,11 @@ inline namespace lib
             {
                 free[i] = storage.data() + i;
             }
+        }
+
+        size_t allocated_count() const
+        {
+            return next_free;
         }
 
         T* allocate() noexcept
@@ -161,11 +199,19 @@ inline namespace lib
             return m_size;
         }
 
+        T& operator[](size_t i) { assert(i < m_size); return m_data[i]; }
+        const T& operator[](size_t i) const { assert(i < m_size); return m_data[i]; }
+
         T* begin() { return m_data; }
         T* end() { return m_data + m_size; }
         const T* begin() const { return m_data; }
         const T* end() const { return m_data + m_size; }
     };
+
+    // small_vector::max_size == MAX_WOREKRS_REQUIRED
+    // Try replacing this later with more efficient class. (maybe just extend CheapStack?)
+    template <class T>
+    using small_vector = std::vector<T>;
 
     template <class Value>
     struct Table
@@ -313,6 +359,113 @@ inline namespace lib
 
         return ReversedRange(range);
     }
+
+    template <class T, class Score>
+    struct TopKQueue
+    {
+        struct Node;
+
+        struct ScoreInfo
+        {
+            Score score;
+            Node* node;
+
+            bool operator<(const ScoreInfo& other) const noexcept { return score < other.score; }
+        };
+
+        struct Node
+        {
+            Node* prev;
+            Node* next;
+            typename std::multiset<ScoreInfo>::iterator iterator;
+            T data;
+        };
+
+        const size_t k;
+        Pool<Node> pool;
+        std::multiset<ScoreInfo> score_set;
+        Node begin;
+        Node end;
+
+        explicit TopKQueue(size_t k)
+            : k(k)
+            , pool(k + 1)
+            , begin
+            {
+                .prev = nullptr,
+                .next = &end,
+                .iterator = {},
+                .data = {}
+            }
+            , end
+            {
+                .prev = &begin,
+                .next = nullptr,
+                .iterator = {},
+                .data = {}
+            }
+        {
+            assert(k > 0);
+        }
+
+        bool empty() const
+        {
+            return 0 == pool.allocated_count();
+        }
+
+        T pop()
+        {
+            assert(pool.allocated_count() > 0);
+            assert(pool.allocated_count() == score_set.size());
+            assert(begin.next != &end);
+            assert(begin.next != nullptr);
+
+            Node* first = begin.next;
+            T result = std::move(first->data);
+            score_set.erase(first->iterator);
+            remove(first);
+            assert(pool.allocated_count() == score_set.size());
+            return result;
+        }
+
+        void push(T value, Score score)
+        {
+            assert(pool.allocated_count() <= k);
+            assert(pool.allocated_count() == score_set.size());
+
+            Node* node = insert_before(std::move(value), &end);
+            node->iterator = score_set.insert(ScoreInfo{.score = score, .node = node});
+
+            if (score_set.size() == k + 1)
+            {
+                auto worst_iterator = score_set.begin();
+                remove(worst_iterator->node);
+                score_set.erase(worst_iterator);
+            }
+
+            assert(pool.allocated_count() <= k);
+            assert(pool.allocated_count() == score_set.size());
+        }
+
+    private:
+        Node* insert_before(T value, Node* after)
+        {
+            Node* node = pool.allocate();
+            node->data = std::move(value);
+            node->prev = after->prev;
+            node->next = after;
+            node->prev->next = node;
+            node->next->prev = node;
+            return node;
+        }
+
+        void remove(Node* node)
+        {
+            node->next->prev = node->prev;
+            node->prev->next = node->next;
+            pool.deallocate(node);
+        }
+    };
 }
 
 inline namespace task
@@ -527,15 +680,17 @@ inline namespace graph
         static inline Version current_global_version = 1;
 
         // TODO: maybe separate class for storing dynamics
-        Moment earliest_work_end_moment; // TODO: earliest_work_end_moment is more convenient to work with
-        Version version;
+        Moment earliest_work_end_moment;
+        Version version; // TODO: лучше как-то по-другому оформить. Может быть завести уникальный индекс для Vertex?
+        size_t index;
         const Location* const location;
         Vertex* const twin;
-        std::vector<Edge*> edges;
+        small_vector<Edge*> edges;
 
-        explicit Vertex(Vertex* twin, const Location* location)
+        explicit Vertex(size_t index, Vertex* twin, const Location* location)
             : earliest_work_end_moment(-1)
             , version(0)
+            , index(index)
             , location(location)
             , twin(twin)
         {
@@ -555,16 +710,9 @@ inline namespace graph
             marked.clear();
         }
 
-        bool is_marked(Span<const size_t> marked_versions = std::array<size_t, 1> { current_global_version }) const
+        bool is_marked() const
         {
-            for (size_t marked_version : marked_versions)
-            {
-                if (version == marked_version)
-                {
-                    return true;
-                }
-            }
-            return false;
+            return version == current_global_version;
         }
 
         void mark_recursively()
@@ -576,23 +724,6 @@ inline namespace graph
                 for (const Edge* edge : edges)
                 {
                     edge->to->mark_recursively();
-                }
-
-                marked.push(this);
-            }
-        }
-
-        // Both overloads could be written in single function, however int that variant passing an extra argument here will add about
-        // 5% overhead to the whole solution. Hence we make two overloads, so we don't pay the price when we use single version.
-        void mark_recursively(const Span<const size_t>& marked_versions)
-        {
-            if (not is_marked(marked_versions))
-            {
-                version = current_global_version;
-
-                for (const Edge* edge : edges)
-                {
-                    edge->to->mark_recursively(marked_versions);
                 }
 
                 marked.push(this);
@@ -654,9 +785,9 @@ inline namespace graph
         Vertex forward;
         Vertex backward;
 
-        explicit FullVertex(const FullLocation* location)
-            : forward(&backward, &location->forward)
-            , backward(&forward, &location->backward)
+        explicit FullVertex(size_t index, const FullLocation* location)
+            : forward(2 * index, &backward, &location->forward)
+            , backward(2 * index + 1, &forward, &location->backward)
         { }
 
         void mark_recursively()
@@ -677,6 +808,8 @@ inline namespace graph
 //            backward.earliest_work_start_moment = other.backward.earliest_work_start_moment;
 //        }
     };
+
+    static_assert(sizeof(FullVertex) == 2 * sizeof(Vertex));
 
     std::vector<std::pair<Vertex*, Vertex*>> cut_assignment(Vertex* v)
     {
@@ -727,11 +860,11 @@ inline namespace graph
             assert(task->n >= 1);
 
             vertices.reserve(task->n + 1);
-            vertices.emplace_back(&task->locations[0]);
+            vertices.emplace_back(vertices.size(), &task->locations[0]);
 
             for (const FullLocation& location : task->locations)
             {
-                vertices.emplace_back(&location);
+                vertices.emplace_back(vertices.size(), &location);
             }
 
             vertices[FORWARD_BASE].recalculate();
@@ -758,6 +891,18 @@ inline namespace graph
         Vertex* backward_finish()
         {
             return &vertices[FORWARD_BASE].backward;
+        }
+
+        Vertex* get(size_t vertex_index)
+        {
+            assert(vertex_index < 2 * vertices.size());
+            return &vertices[0].forward + vertex_index;
+        }
+
+        const Vertex* get(size_t vertex_index) const
+        {
+            assert(vertex_index < 2 * vertices.size());
+            return &vertices[0].forward + vertex_index;
         }
 
         Edge* link(Vertex* a, Vertex* b)
@@ -1087,6 +1232,71 @@ inline namespace graph
         return output;
     }
 
+    struct ReachabilityTable
+    {
+        using Row = std::vector<Vertex::Version>;
+        std::vector<Vertex::Version> last_version;
+        std::vector<Row> table;
+
+        explicit ReachabilityTable(Graph& graph)
+            : last_version(2 * graph.vertices.size(), 0)
+        {
+            table.resize(2 * graph.vertices.size());
+
+            for (Row& row : table)
+            {
+                // Note: row[i] stores version for FullVertex, but last_version[j] stores version for Vertex.
+                row.resize(graph.vertices.size());
+            }
+        }
+
+        bool is_reachable(Vertex* from, Vertex* to) const
+        {
+            assert(is_current(from->index));
+            return table[from->index][to->index / 2] == Vertex::current_global_version;
+        }
+
+        bool mark_recursively(const Edge* edge)
+        {
+            return mark_recursively(edge->to) | mark_recursively(edge->twin->to);
+        }
+
+        bool mark_recursively(const Vertex* vertex)
+        {
+            const size_t index = vertex->index;
+
+            assert(index < table.size());
+
+            if (not is_current(index))
+            {
+                last_version[index] = Vertex::current_global_version;
+                mark_recursively(table[index], vertex);
+                return true;
+            }
+
+            return false;
+        }
+
+    private:
+        bool is_current(size_t index) const
+        {
+            return last_version[index] == Vertex::current_global_version;
+        }
+
+        static void mark_recursively(Row& row, const Vertex* vertex)
+        {
+            const size_t index = vertex->index / 2;
+            if (Vertex::current_global_version != row[index])
+            {
+                row[index] = Vertex::current_global_version;
+
+                for (const Edge* edge : vertex->edges)
+                {
+                    mark_recursively(row, edge->to);
+                }
+            }
+        }
+    };
 }
 
 inline namespace edit
@@ -1245,19 +1455,19 @@ inline namespace solvers
 
     namespace greedy
     {
-        struct Candidate
+        struct EdgeProfile
         {
             Edge* edge;
             TimeWindow time_window;
             int reward;
 
-            bool operator<(const Candidate& other) const noexcept { return reward > other.reward; }
+            bool operator<(const EdgeProfile& other) const noexcept { return reward > other.reward; }
         };
 
-        std::vector<Candidate> get_candidates(Graph& graph, Vertex* vertex)
+        std::vector<EdgeProfile> get_edge_profiles(Graph &graph, Vertex *vertex)
         {
-            std::vector<Candidate> candidates;
-            candidates.reserve(get_total_edge_count(graph));
+            std::vector<EdgeProfile> profiles;
+            profiles.reserve(get_total_edge_count(graph));
 
             const int duration = vertex->location->duration;
 
@@ -1268,7 +1478,7 @@ inline namespace solvers
                     const TimeWindow time_window = time_window_after_interpose(edge, vertex);
                     if (time_window.length() >= duration)
                     {
-                        candidates.emplace_back(Candidate
+                        profiles.emplace_back(EdgeProfile
                         {
                             .edge = edge,
                             .time_window = time_window,
@@ -1278,113 +1488,341 @@ inline namespace solvers
                 }
             }
 
-            std::sort(begin(candidates), end(candidates));
+            std::sort(begin(profiles), end(profiles));
 
-            return candidates;
+            return profiles;
         }
+
+        using EdgesSelection = CheapStack<size_t, MAX_WORKERS_REQUIRED>;
 
         struct EdgesSelector
         {
-            int attempt_count;
-            int min_reward_threshold;
-            double accept_probability;
-            size_t max_prefix_size;
-            double weight_power;
+            static inline std::unique_ptr<ReachabilityTable> reachability_table = nullptr;
 
-            std::vector<const Candidate*> operator()(std::vector<Candidate>& candidates, Vertex* vertex)
+            int min_reward_threshold;
+            double reward_percentile_cutoff;
+            size_t width;
+            int max_eval_points;
+            size_t max_selections_to_consider;
+
+            static void setup_reachability_table(Graph& graph)
+            {
+                if (nullptr == reachability_table)
+                {
+                    reachability_table = std::make_unique<ReachabilityTable>(graph);
+                }
+
+                Vertex::current_global_version += 1;
+            }
+
+            EdgesSelection operator()(Graph& graph, std::vector<EdgeProfile>& profiles, Vertex* vertex)
             {
                 assert(0 == Vertex::marked.size);
+                assert(max_selections_to_consider > 0);
 
-                const size_t workers_required = vertex->location->workers_required;
-                const int duration = vertex->location->duration;
+                setup_reachability_table(graph);
 
-                std::vector<const Candidate*> best_chosen;
-                int best_reward = min_reward_threshold;
+                std::vector<Searcher::State> selections;
+                selections.reserve(max_selections_to_consider);
 
-                std::vector<const Candidate*> current_chosen;
-                current_chosen.reserve(workers_required);
-
-                for (int i = 0; i != attempt_count; ++i)
-                {
-                    TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
-
-                    for (const Candidate& candidate : candidates)
+                Searcher::Listener listener
+                (
+                    [&](const Searcher::State& state) -> Action
                     {
-                        const TimeWindow new_time_window = current_time_window.intersect(candidate.time_window);
+                        selections.push_back(state);
 
-                        if (new_time_window.length() < duration)
+                        if (selections.size() == max_selections_to_consider)
                         {
-                            continue;
+                            return STOP;
                         }
 
-                        if (candidate.edge->twin->to->twin->is_marked() or candidate.edge->to->twin->is_marked())
+                        return ADD_STATE;
+                    }
+                );
+
+                Searcher searcher(profiles, vertex, max_eval_points, width, listener);
+                searcher.search();
+
+                if (not selections.empty())
+                {
+                    int highest_reward = min_reward_threshold;
+
+                    for (const Searcher::State& state : selections)
+                    {
+                        highest_reward = std::max(highest_reward, state.reward);
+                    }
+
+                    const int threshold = std::max(min_reward_threshold, int(highest_reward * reward_percentile_cutoff));
+
+                    std::vector<const Searcher::State*> filtered_selections;
+                    filtered_selections.reserve(max_selections_to_consider);
+
+                    for (const Searcher::State& state : selections)
+                    {
+                        if (state.reward >= threshold)
                         {
-                            continue;
-                        }
-
-                        std::bernoulli_distribution coin_flip(accept_probability);
-                        if (not coin_flip(RANDOM_ENGINE))
-                        {
-                            continue;
-                        }
-
-                        candidate.edge->to->mark_recursively();
-                        candidate.edge->twin->to->mark_recursively();
-
-                        current_time_window = new_time_window;
-                        current_chosen.emplace_back(&candidate);
-
-                        if (current_chosen.size() == workers_required)
-                        {
-                            int current_reward = 0;
-                            for (const Candidate* candidate : current_chosen)
-                            {
-                                current_reward += candidate->reward;
-                            }
-
-                            if (current_reward > best_reward)
-                            {
-                                best_chosen = std::move(current_chosen);
-                                best_reward = current_reward;
-                            }
-
-                            break;
+                            filtered_selections.push_back(&state);
                         }
                     }
 
-                    Vertex::unmark_all();
-                    current_chosen.clear();
+                    if (filtered_selections.size() > 0)
+                    {
+                        std::uniform_int_distribution<size_t> random(0, filtered_selections.size() - 1);
+                        return filtered_selections[random(RANDOM_ENGINE)]->selection;
+                    }
                 }
 
-                return best_chosen;
+                return {};
             }
+
+            enum Action
+            {
+                ADD_STATE,
+                SKIP_STATE,
+                STOP
+            };
+
+            struct Searcher
+            {
+                struct State
+                {
+                    EdgesSelection selection;
+                    size_t index;
+                    int reward;
+                };
+
+                struct ListenerI
+                {
+                    virtual ~ListenerI() = default;
+                    virtual Action on_found_selection(const State&) = 0;
+                };
+
+                template <class Lambda>
+                struct Listener final : Searcher::ListenerI
+                {
+                    Lambda lambda;
+                    explicit Listener(Lambda lambda) : lambda(std::move(lambda)) { }
+                    Action on_found_selection(const State& state) override { return lambda(state); }
+                };
+
+                static inline const int QUEUE_POP_POINTS = 1;
+                static inline const int MARK_POINTS = 40;
+
+                const int duration;
+                const size_t workers_required;
+                int eval_points_left;
+                const std::vector<EdgeProfile>& profiles;
+                TopKQueue<State, int> queue;
+                std::vector<Bool> chosen;
+                ListenerI& listener;
+
+                Searcher
+                (
+                    const std::vector<EdgeProfile>& profiles,
+                    Vertex* vertex,
+                    int eval_points_left,
+                    size_t width,
+                    ListenerI& listener
+                )
+                    : duration(vertex->location->duration)
+                    , workers_required(vertex->location->workers_required)
+                    , eval_points_left(eval_points_left)
+                    , profiles(profiles)
+                    , queue(width)
+                    , chosen(profiles.size(), FALSE)
+                    , listener(listener)
+                { }
+
+                int get_reward(const State& state)
+                {
+                    int reward = 0;
+
+                    for (size_t i : state.selection)
+                    {
+                        reward += profiles[i].reward;
+                    }
+
+                    return reward;
+                }
+
+                void search()
+                {
+                    State start;
+                    start.index = 0;
+
+                    switch (greedy_add_to_selection(start))
+                    {
+                        case ADD_STATE:
+                            queue.push(start, start.reward);
+                            break;
+                        case SKIP_STATE:
+                            break;
+                        case STOP:
+                            return;
+                    }
+
+                    while (not queue.empty())
+                    {
+                        State state = queue.pop();
+                        eval_points_left -= QUEUE_POP_POINTS;
+
+                        for (size_t i = 0; i != state.selection.size; ++i)
+                        {
+                            size_t pos = state.selection[i];
+
+                            if (eval_points_left <= 0)
+                            {
+                                return;
+                            }
+
+                            if (pos >= state.index)
+                            {
+                                State new_state
+                                {
+                                    .selection = state.selection,
+                                    .index = pos + 1,
+                                    .reward = {}
+                                };
+
+                                new_state.selection.swap_remove(i);
+
+                                switch (greedy_add_to_selection(new_state))
+                                {
+                                    case ADD_STATE:
+                                        queue.push(new_state, new_state.reward);
+                                        break;
+                                    case SKIP_STATE:
+                                        break;
+                                    case STOP:
+                                        return;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                bool is_marked(const EdgesSelection& selection, Edge* edge)
+                {
+                    Vertex* from = edge->twin->to->twin;
+                    Vertex* to = edge->to->twin;
+
+                    for (size_t i : selection)
+                    {
+                        const Edge* selected_edge = profiles[i].edge;
+
+                        if (reachability_table->is_reachable(selected_edge->to, from)
+                            or reachability_table->is_reachable(selected_edge->twin->to, to))
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                // TODO: needs some tracing to understand if this effective or not.
+                Action greedy_add_to_selection(State& state)
+                {
+                    EdgesSelection& selection = state.selection;
+
+                    assert(selection.size < workers_required);
+
+                    if (state.index + workers_required - selection.size > profiles.size())
+                    {
+                        return SKIP_STATE;
+                    }
+
+                    TimeWindow current_time_window { .from = 0, .to = MAX_MOMENT };
+
+                    for (size_t i : selection)
+                    {
+                        assert(i < profiles.size());
+                        chosen[i] = TRUE;
+                        current_time_window = current_time_window.intersect(profiles[i].time_window);
+                    }
+
+                    assert(current_time_window.length() >= duration);
+
+                    for (size_t i = state.index; i < profiles.size(); ++i)
+                    {
+                        if (FALSE == chosen[i])
+                        {
+                            const EdgeProfile& profile = profiles[i];
+                            TimeWindow new_time_window = current_time_window.intersect(profile.time_window);
+
+                            if (new_time_window.length() < duration)
+                            {
+                                continue;
+                            }
+
+                            if (is_marked(selection, profile.edge))
+                            {
+                                continue;
+                            }
+
+                            if (reachability_table->mark_recursively(profile.edge))
+                            {
+                                eval_points_left -= MARK_POINTS;
+                            }
+
+                            current_time_window = new_time_window;
+                            selection.push(i);
+
+                            if (selection.size == workers_required)
+                            {
+                                break;
+
+                            }
+                        }
+                    }
+
+                    for (size_t i : selection)
+                    {
+                        chosen[i] = FALSE;
+                    }
+
+                    state.reward = get_reward(state);
+
+                    if (selection.size == workers_required)
+                    {
+                        return listener.on_found_selection(state);
+                    }
+
+                    return ADD_STATE;
+                }
+            };
         };
 
         template <class Strategies>
         struct Inserter
         {
+            size_t max_profiles;
             Strategies strategies;
 
-            int operator()(Graph& graph, Vertex* vertex)
+            void operator()(Graph& graph, Vertex* vertex)
             {
                 assert(not vertex->location->is_base());
                 assert(vertex->edges.empty());
                 assert(vertex->twin->edges.empty());
 
                 // NOTE: this could be a customization point, but probably it isn't needed.
-                std::vector<Candidate> candidates = get_candidates(graph, vertex);
-                const std::vector<const Candidate*> chosen = strategies.select_edges(candidates, vertex);
+                std::vector<EdgeProfile> profiles = get_edge_profiles(graph, vertex);
 
-                int reward = 0;
-
-                if (not chosen.empty())
+                if (profiles.size() > max_profiles)
                 {
-                    assert(chosen.size() == vertex->location->workers_required);
+                    profiles.resize(max_profiles);
+                }
 
-                    for (const Candidate* candidate : chosen)
+                const EdgesSelection selection = strategies.select_edges(graph, profiles, vertex);
+
+                if (not selection.empty())
+                {
+                    assert(selection.size == vertex->location->workers_required);
+
+                    for (size_t i : selection)
                     {
-                        reward += candidate->reward;
-                        graph.interpose(candidate->edge, vertex);
+                        assert(i < profiles.size());
+                        graph.interpose(profiles[i].edge, vertex);
                     }
 
                     assert(vertex->edges.size() == vertex->location->workers_required);
@@ -1397,8 +1835,6 @@ inline namespace solvers
                 }
 
                 assert(0 == Vertex::marked.size);
-
-                return reward;
             }
         };
 
@@ -1407,17 +1843,13 @@ inline namespace solvers
         {
             Strategies strategies;
 
-            int operator()(Graph& graph)
+            void operator()(Graph& graph)
             {
-                int total_reward = 0;
-
                 for (Vertex* order : strategies.choose_orders(graph))
                 {
                     assert(order->edges.empty());
-                    total_reward += strategies.insert(graph, order);
+                    strategies.insert(graph, order);
                 }
-
-                return total_reward;
             }
         };
 
@@ -1479,7 +1911,7 @@ inline namespace solvers
         }
     }
 
-    int edge_edge_optimizer(Graph& graph)
+    int edge_edge_optimizer(Graph&)
     {
 
         return 0;
@@ -1500,13 +1932,14 @@ struct Processor
     {
         greedy::GreedyStrategies strategies {
             .insert = {
+                .max_profiles = 1000,
                 .strategies = {
                     .select_edges = {
-                        .attempt_count = 80,
                         .min_reward_threshold = -10000,
-                        .accept_probability = 0.9,
-                        .max_prefix_size = 100,
-                        .weight_power = 2
+                        .reward_percentile_cutoff = 0.95,
+                        .width = 1,
+                        .max_eval_points = 7000,
+                        .max_selections_to_consider = 1
                     }
                 }
             }
