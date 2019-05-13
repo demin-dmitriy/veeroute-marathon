@@ -700,6 +700,7 @@ inline namespace graph
             ;
 
         void update(Vertex* source);
+        bool check_index() const;
     };
 
     struct FullVertex;
@@ -773,6 +774,11 @@ inline namespace graph
             return earliest_work_end_moment;
         }
 
+        Moment get_latest_work_start_moment() const
+        {
+            return twin_moment(twin->earliest_work_end_moment);
+        }
+
         void recalculate()
         {
             Moment earliest_work_start_moment = location->time_window.from;
@@ -794,7 +800,7 @@ inline namespace graph
 
         static void recalculate_all_marked()
         {
-            while (marked.size != 0)
+            while (not marked.empty())
             {
                 // TODO: early stopping ... but how exactly?
                 marked.pop()->recalculate();
@@ -806,6 +812,11 @@ inline namespace graph
     void Edge::update(Vertex* source)
     {
         earliest_arrive_moment = source->get_earliest_work_end_moment() + distance(source, to);
+    }
+
+    bool Edge::check_index() const
+    {
+        return this == this->twin->to->twin->edges[this->index];
     }
 
     int distance(const Vertex* a, const Vertex* b)
@@ -1015,18 +1026,25 @@ inline namespace graph
             }
         }
 
-        void two_opt_swap(Edge* a, Edge* b)
+        void two_opt_swap(Edge* ab, Edge* cd)
         {
+            assert(ab->check_index() and ab->twin->check_index() and cd->check_index() and cd->twin->check_index());
+
             std::swap
             (
-                a->to->twin->edges[a->twin->index],
-                b->to->twin->edges[b->twin->index]
+                ab->to->twin->edges[ab->twin->index],
+                cd->to->twin->edges[cd->twin->index]
             );
 
-            std::swap(a->twin->index, b->twin->index);
-            std::swap(a->to, b->to);
+            std::swap(ab->twin->index, cd->twin->index);
+            std::swap(ab->to, cd->to);
 
+            assert(ab->check_index() and ab->twin->check_index() and cd->check_index() and cd->twin->check_index());
 
+            ab->update(ab->twin->to->twin);
+            ab->twin->update(ab->to->twin);
+            cd->update(cd->twin->to->twin);
+            cd->twin->update(cd->to->twin);
         }
 
         Graph copy() const;
@@ -1137,13 +1155,13 @@ inline namespace graph
 
     bool are_dynamics_up_to_date(Graph& graph)
     {
-        assert(0 == Vertex::marked.size);
+        assert(Vertex::marked.empty());
 
         graph.forward_start()->mark_recursively();
         graph.backward_start()->mark_recursively();
 
         // TODO: use graph copy instead of manual checking
-        while (Vertex::marked.size != 0)
+        while (not Vertex::marked.empty())
         {
             Vertex* v = Vertex::marked.pop();
 
@@ -1168,7 +1186,7 @@ inline namespace graph
 
     std::vector<Moment> calculate_true_last_arrive_moments(Graph& graph)
     {
-        assert(0 == Vertex::marked.size);
+        assert(Vertex::marked.empty());
 
         std::vector<Moment> last_arrive_moments(graph.task->n + 1, -1);
 
@@ -1193,7 +1211,7 @@ inline namespace graph
             update_edge(base, edge, twin_moment(edge->twin->earliest_arrive_moment));
         }
 
-        while (Vertex::marked.size != 0)
+        while (not Vertex::marked.empty())
         {
             const Vertex* from = Vertex::marked.pop();
             assert(last_arrive_moments[from->location->index] != -1);
@@ -1344,7 +1362,7 @@ inline namespace edit
             TimeWindow
             {
                 .from = a->get_earliest_work_end_moment() + distance(a, v),
-                .to = twin_moment(b->twin->get_earliest_work_end_moment() + distance(b, v))
+                .to = b->get_latest_work_start_moment() - distance(b, v)
             }
         );
     }
@@ -1398,6 +1416,16 @@ namespace scorers
         }
 
         return reward_after - reward_now;
+    }
+
+    int two_opt_reward(const Edge* ab, const Edge* cd)
+    {
+        const Vertex* a = ab->twin->to;
+        const Vertex* b = ab->to;
+        const Vertex* c = cd->twin->to;
+        const Vertex* d = cd->to;
+
+        return distance(a, b) + distance(c, d) - distance(a, d) - distance(c, b);
     }
 }
 
@@ -1486,6 +1514,19 @@ inline namespace solvers
         return count;
     }
 
+    std::vector<Edge*> get_forward_edges(Graph& graph)
+    {
+        std::vector<Edge*> edges;
+        edges.reserve(get_total_edge_count(graph));
+
+        for (const FullVertex& full_vertex : graph.vertices)
+        {
+            edges.insert(edges.end(), full_vertex.forward.edges.begin(), full_vertex.forward.edges.end());
+        }
+
+        return edges;
+    }
+
     namespace greedy
     {
         struct EdgeProfile
@@ -1550,7 +1591,7 @@ inline namespace solvers
 
             EdgesSelection operator()(Graph& graph, std::vector<EdgeProfile>& profiles, Vertex* vertex)
             {
-                assert(0 == Vertex::marked.size);
+                assert(Vertex::marked.empty());
                 assert(max_selections_to_consider > 0);
 
                 setup_reachability_table(graph);
@@ -1886,7 +1927,7 @@ inline namespace solvers
                     Vertex::recalculate_all_marked();
                 }
 
-                assert(0 == Vertex::marked.size);
+                assert(Vertex::marked.empty());
             }
         };
 
@@ -1915,7 +1956,7 @@ inline namespace solvers
             static inline const auto choose_orders = [](Graph& graph) -> std::vector<Vertex*>
             {
                 const Vector center = graph.forward_start()->location->point;
-                return get_sorted_unresolved_orders(graph, [center](const Vertex* x) { return distance(center, x->location->point); });
+                return get_sorted_unresolved_orders(graph, [center](const Vertex* x) { return 3 * x->location->workers_required + 1 * distance(center, x->location->point); });
             };
 
             Inserter<InserterStrategies> insert;
@@ -1926,7 +1967,7 @@ inline namespace solvers
     {
         int remove_unprofitable_orders(Graph& graph)
         {
-            assert(0 == Vertex::marked.size);
+            assert(Vertex::marked.empty());
 
             int total_reward = 0;
             bool changed = true;
@@ -1963,10 +2004,86 @@ inline namespace solvers
         }
     }
 
-    int edge_edge_optimizer(Graph&)
+    bool can_swap_two_edges(const Edge* ab, const Edge* cd)
     {
+        const Vertex* a = ab->twin->to->twin;
+        const Vertex* b = ab->to;
+        const Vertex* c = cd->twin->to->twin;
+        const Vertex* d = cd->to;
 
-        return 0;
+        if (a->get_earliest_work_end_moment() + distance(a, d) > d->get_latest_work_start_moment())
+        {
+            return false;
+        }
+
+        if (c->get_earliest_work_end_moment() + distance(c, b) > b->get_latest_work_start_moment())
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    int edge_edge_optimizer(Graph& graph)
+    {
+        assert(Vertex::marked.empty());
+
+        int total_reward = 0;
+        std::vector<Edge*> edges = get_forward_edges(graph);
+
+        bool improves = true;
+
+        while (improves) // TODO: limit iteration count or time or both.
+        {
+            improves = false;
+
+            for (Edge* ab : edges)
+            {
+                ab->to->mark_recursively();
+                ab->twin->to->mark_recursively();
+
+                for (Edge* cd : edges)
+                {
+                    if (ab == cd)
+                    {
+                        continue;
+                    }
+
+                    if (cd->twin->to->twin->is_marked() or cd->to->twin->is_marked())
+                    {
+                        continue;
+                    }
+
+                    if (not can_swap_two_edges(ab, cd))
+                    {
+                        continue;
+                    }
+
+                    // TODO: if takes too much time, try, swap most important edges first
+                    int reward = scorers::two_opt_reward(ab, cd);
+
+                    if (reward > 0)
+                    {
+                        total_reward += reward;
+                        assert(can_swap_two_edges(ab->twin, cd->twin));
+
+                        improves = true;
+                        cd->to->mark_recursively();
+                        cd->twin->to->mark_recursively();
+                        graph.two_opt_swap(ab, cd);
+                        assert(ab->to->is_marked() and ab->twin->to->is_marked());
+                        Vertex::recalculate_all_marked(); // Try to recalculate lazily
+                        assert(are_dynamics_up_to_date(graph)); // TODO: just continue?
+                        ab->to->mark_recursively();
+                        ab->twin->to->mark_recursively();
+                    }
+                }
+
+                Vertex::unmark_all();
+            }
+        }
+
+        return total_reward;
     }
 }
 
@@ -1989,9 +2106,9 @@ struct Processor
                     .select_edges = {
                         .min_reward_threshold = -10000,
                         .reward_percentile_cutoff = 1,
-                        .width = 60,
+                        .width = 10000,
                         .max_eval_points = 140000,
-                        .max_selections_to_consider = 100
+                        .max_selections_to_consider = 1000
                     }
                 }
             }
@@ -1999,6 +2116,7 @@ struct Processor
 
         generate_empty_routes(graph);
         greedy::Greedy<greedy::GreedyStrategies>{strategies}(graph);
+        solvers::edge_edge_optimizer(graph);
         remove_empty_paths(graph);
     }
 };
