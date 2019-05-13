@@ -2127,8 +2127,14 @@ struct Processor
         {
             assert(order->edges.empty());
             strategies.insert(graph, order);
+            std::unordered_set<Edge*> edges_to_optimize;
+            edges_to_optimize.insert(begin(order->edges), end(order->edges));
+            for (Edge* edge : order->twin->edges)
+            {
+                edges_to_optimize.insert(edge->twin);
+            }
+            solvers::edge_edge_optimizer(graph, edges_to_optimize);
         }
-        solvers::edge_edge_optimizer(graph, std::unordered_set<Edge*>(begin(graph.forward_edges), end(graph.forward_edges)));
 
         remove_empty_paths(graph);
     }
