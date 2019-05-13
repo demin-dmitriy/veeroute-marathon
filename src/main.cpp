@@ -24,6 +24,15 @@
 #include <ctime>
 #include <cmath>
 
+#ifdef ONLINE_JUDGE
+    #define TRACE(...)
+    #define TRACELN(...)
+#else
+    std::unique_ptr<std::ofstream> trace_file = nullptr;
+    #define TRACE(...) trace(__VA_ARGS__)
+    #define TRACELN(...) traceln(__VA_ARGS__)
+#endif
+
 constexpr double TIME_LIMIT_SECONDS = 15;
 
 #ifndef ONLINE_JUDGE
@@ -370,7 +379,7 @@ inline namespace lib
             Score score;
             Node* node;
 
-            bool operator<(const ScoreInfo& other) const noexcept { return score < other.score; }
+            bool operator<(const ScoreInfo& other) const noexcept { return score > other.score; }
         };
 
         struct Node
@@ -466,6 +475,30 @@ inline namespace lib
             pool.deallocate(node);
         }
     };
+
+    #ifndef ONLINE_JUDGE
+        void trace() { }
+
+        template <class Arg, class ... Args>
+        void trace(const Arg& arg, const Args& ... args)
+        {
+            if (trace_file)
+            {
+                (*trace_file) << arg << " ";
+                trace(args...);
+            }
+        }
+
+        template <class ... Args>
+        void traceln(const Args& ... args)
+        {
+            if (trace_file)
+            {
+                trace(args...);
+                (*trace_file) << "\n";
+            }
+        }
+    #endif
 }
 
 inline namespace task
@@ -1531,6 +1564,13 @@ inline namespace solvers
                     {
                         selections.push_back(state);
 
+                        TRACE("candidate:");
+                        for (size_t i : state.selection)
+                        {
+                            TRACE(i);
+                        }
+                        TRACELN("(reward", state.reward, ")");
+
                         if (selections.size() == max_selections_to_consider)
                         {
                             return STOP;
@@ -1557,13 +1597,16 @@ inline namespace solvers
                     std::vector<const Searcher::State*> filtered_selections;
                     filtered_selections.reserve(max_selections_to_consider);
 
+                    TRACE("filtered:");
                     for (const Searcher::State& state : selections)
                     {
                         if (state.reward >= threshold)
                         {
+                            TRACE(&state - &selections[0]);
                             filtered_selections.push_back(&state);
                         }
                     }
+                    TRACELN();
 
                     if (filtered_selections.size() > 0)
                     {
@@ -1936,10 +1979,10 @@ struct Processor
                 .strategies = {
                     .select_edges = {
                         .min_reward_threshold = -10000,
-                        .reward_percentile_cutoff = 0.95,
-                        .width = 1,
-                        .max_eval_points = 7000,
-                        .max_selections_to_consider = 1
+                        .reward_percentile_cutoff = 1,
+                        .width = 16,
+                        .max_eval_points = 140000,
+                        .max_selections_to_consider = 5
                     }
                 }
             }
@@ -1992,6 +2035,11 @@ int main(int argc, char** argv)
                 ensure(argc > i + 1);
                 i += 1;
                 WORKERS_COUNT = std::stoi(argv[i]);
+            }
+            else if (arg_i == "--trace")
+            {
+                trace_file = std::make_unique<std::ofstream>("trace.log", std::ios::app);
+                (*trace_file) << "\n--- --- ---\n";
             }
             else
             {
