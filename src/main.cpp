@@ -18,6 +18,7 @@
 #include <random>
 #include <set>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include <cassert>
@@ -164,6 +165,11 @@ inline namespace lib
             {
                 free[i] = storage.data() + i;
             }
+        }
+
+        size_t capacity() const
+        {
+            return storage.size();
         }
 
         size_t allocated_count() const
@@ -698,6 +704,11 @@ inline namespace graph
                 = 10000
             #endif
             ;
+        Edge** backreference
+            #ifndef NDEBUG
+                = nullptr
+            #endif
+            ;
 
         void update(Vertex* source);
         bool check_index() const;
@@ -747,6 +758,11 @@ inline namespace graph
         bool is_marked() const
         {
             return version == current_global_version;
+        }
+
+        bool is_forward() const
+        {
+            return index % 2 == 0;
         }
 
         void mark_recursively()
@@ -896,12 +912,15 @@ inline namespace graph
         const Task* task;
         std::vector<FullVertex> vertices;
         Pool<Edge> edge_pool;
+        std::vector<Edge*> forward_edges;
 
         explicit Graph(const Task* task)
             : task(task)
             , edge_pool(4 * task->sum_workers_required)
         {
             assert(task->n >= 1);
+
+            forward_edges.reserve(edge_pool.capacity());
 
             vertices.reserve(task->n + 1);
             vertices.emplace_back(vertices.size(), &task->locations[0]);
@@ -951,6 +970,8 @@ inline namespace graph
 
         Edge* link(Vertex* a, Vertex* b)
         {
+            assert(a->is_forward() == b->is_forward());
+
             const auto add_edge = [this](Vertex* v) -> Edge*
             {
                 assert(v->edges.size() < v->edges.capacity());
@@ -960,8 +981,23 @@ inline namespace graph
                 return edge;
             };
 
+            const auto register_forward_edge = [this](Edge* edge)
+            {
+                forward_edges.push_back(edge);
+                edge->backreference = &forward_edges.back();
+            };
+
             Edge* ab = add_edge(a);
             Edge* ba = add_edge(b->twin);
+
+            if (a->is_forward())
+            {
+                register_forward_edge(ab);
+            }
+            else
+            {
+                register_forward_edge(ba);
+            }
 
             ab->to = b;
             ab->twin = ba;
@@ -985,7 +1021,24 @@ inline namespace graph
                 edge_pool.deallocate(edge);
             };
 
+            const auto unregister_forward_edge = [this](Edge* edge)
+            {
+                assert(contains_ptr(forward_edges, edge->backreference));
+                forward_edges.back()->backreference = edge->backreference;
+                *edge->backreference = forward_edges.back();
+                forward_edges.pop_back();
+            };
+
             Edge* ba = ab->twin;
+
+            if (ab->to->is_forward())
+            {
+                unregister_forward_edge(ab);
+            }
+            else
+            {
+                unregister_forward_edge(ba);
+            }
 
             remove_edge(ba->to->twin, ab);
             remove_edge(ab->to->twin, ba);
@@ -1502,31 +1555,6 @@ inline namespace solvers
         }
     }
 
-    size_t get_total_edge_count(const Graph& graph)
-    {
-        size_t count = 0;
-
-        for (const FullVertex& full_vertex : graph.vertices)
-        {
-            count += full_vertex.forward.edges.size();
-        }
-
-        return count;
-    }
-
-    std::vector<Edge*> get_forward_edges(Graph& graph)
-    {
-        std::vector<Edge*> edges;
-        edges.reserve(get_total_edge_count(graph));
-
-        for (const FullVertex& full_vertex : graph.vertices)
-        {
-            edges.insert(edges.end(), full_vertex.forward.edges.begin(), full_vertex.forward.edges.end());
-        }
-
-        return edges;
-    }
-
     namespace greedy
     {
         struct EdgeProfile
@@ -1541,24 +1569,21 @@ inline namespace solvers
         std::vector<EdgeProfile> get_edge_profiles(Graph &graph, Vertex *vertex)
         {
             std::vector<EdgeProfile> profiles;
-            profiles.reserve(get_total_edge_count(graph));
+            profiles.reserve(graph.forward_edges.size());
 
             const int duration = vertex->location->duration;
 
-            for (FullVertex& full_vertex : graph.vertices)
+            for (Edge* edge : graph.forward_edges)
             {
-                for (Edge* edge : full_vertex.forward.edges)
+                const TimeWindow time_window = time_window_after_interpose(edge, vertex);
+                if (time_window.length() >= duration)
                 {
-                    const TimeWindow time_window = time_window_after_interpose(edge, vertex);
-                    if (time_window.length() >= duration)
+                    profiles.emplace_back(EdgeProfile
                     {
-                        profiles.emplace_back(EdgeProfile
-                        {
-                            .edge = edge,
-                            .time_window = time_window,
-                            .reward = scorers::interpose_reward(edge, vertex)
-                        });
-                    }
+                        .edge = edge,
+                        .time_window = time_window,
+                        .reward = scorers::interpose_reward(edge, vertex)
+                    });
                 }
             }
 
@@ -2024,66 +2049,48 @@ inline namespace solvers
         return true;
     }
 
-    int edge_edge_optimizer(Graph& graph)
+    void edge_edge_optimizer(Graph& graph, std::unordered_set<Edge*> edges)
     {
         assert(Vertex::marked.empty());
 
-        int total_reward = 0;
-        std::vector<Edge*> edges = get_forward_edges(graph);
-
-        bool improves = true;
-
-        while (improves) // TODO: limit iteration count or time or both.
+        while (not edges.empty())
         {
-            improves = false;
+            Edge* ab = *edges.begin();
+            edges.erase(edges.begin());
 
-            for (Edge* ab : edges)
+            ab->to->mark_recursively();
+            ab->twin->to->mark_recursively();
+
+            for (Edge* cd : graph.forward_edges)
             {
-                ab->to->mark_recursively();
-                ab->twin->to->mark_recursively();
-
-                for (Edge* cd : edges)
+                if (ab->to == cd->to or ab->twin->to == cd->twin->to)
                 {
-                    if (ab == cd)
-                    {
-                        continue;
-                    }
-
-                    if (cd->twin->to->twin->is_marked() or cd->to->twin->is_marked())
-                    {
-                        continue;
-                    }
-
-                    if (not can_swap_two_edges(ab, cd))
-                    {
-                        continue;
-                    }
-
-                    // TODO: if takes too much time, try, swap most important edges first
-                    int reward = scorers::two_opt_reward(ab, cd);
-
-                    if (reward > 0)
-                    {
-                        total_reward += reward;
-                        assert(can_swap_two_edges(ab->twin, cd->twin));
-
-                        improves = true;
-                        cd->to->mark_recursively();
-                        cd->twin->to->mark_recursively();
-                        graph.two_opt_swap(ab, cd);
-                        assert(ab->to->is_marked() and ab->twin->to->is_marked());
-                        Vertex::recalculate_all_marked(); // Try to recalculate lazily
-                        assert(are_dynamics_up_to_date(graph)); // TODO: just continue?
-                        ab->to->mark_recursively();
-                        ab->twin->to->mark_recursively();
-                    }
+                    continue;
                 }
 
-                Vertex::unmark_all();
-            }
-        }
+                if (cd->twin->to->twin->is_marked() or cd->to->twin->is_marked())
+                {
+                    continue;
+                }
 
-        return total_reward;
+                // TODO: if takes too much time, try, swap most important edges first
+                if (can_swap_two_edges(ab, cd) and scorers::two_opt_reward(ab, cd) > 0)
+                {
+                    assert(can_swap_two_edges(ab->twin, cd->twin));
+
+                    cd->to->mark_recursively();
+                    cd->twin->to->mark_recursively();
+                    graph.two_opt_swap(ab, cd);
+                    assert(ab->to->is_marked() and ab->twin->to->is_marked());
+                    Vertex::recalculate_all_marked();
+                    edges.insert(cd);
+                    edges.insert(ab);
+                    break;
+                }
+            }
+
+            Vertex::unmark_all();
+        }
     }
 }
 
@@ -2115,8 +2122,14 @@ struct Processor
         };
 
         generate_empty_routes(graph);
-        greedy::Greedy<greedy::GreedyStrategies>{strategies}(graph);
-        solvers::edge_edge_optimizer(graph);
+
+        for (Vertex* order : strategies.choose_orders(graph))
+        {
+            assert(order->edges.empty());
+            strategies.insert(graph, order);
+        }
+        solvers::edge_edge_optimizer(graph, std::unordered_set<Edge*>(begin(graph.forward_edges), end(graph.forward_edges)));
+
         remove_empty_paths(graph);
     }
 };
