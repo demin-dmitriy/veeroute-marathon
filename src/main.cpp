@@ -1059,7 +1059,7 @@ inline namespace graph
             assert(c->edges.size() == c->twin->edges.size());
         }
 
-        void cut(Vertex* v)
+        CheapStack<Edge*, MAX_WORKERS_REQUIRED> cut(Vertex* v)
         {
             const auto assignment = cut_assignment(v);
 
@@ -1071,12 +1071,17 @@ inline namespace graph
                 }
             }
 
+            CheapStack<Edge*, MAX_WORKERS_REQUIRED> created_edges;
+
             for (auto [from, to] : assignment)
             {
                 Edge* edge = link(from, to);
                 edge->update(from);
                 edge->twin->update(to->twin);
+                created_edges.push(edge);
             }
+
+            return created_edges;
         }
 
         void two_opt_swap(Edge* ab, Edge* cd)
@@ -1988,44 +1993,12 @@ inline namespace solvers
         };
     }
 
-    namespace ruin
+    void collect_edges(std::unordered_set<Edge*>& edge_set, Vertex* vertex)
     {
-        int remove_unprofitable_orders(Graph& graph)
+        edge_set.insert(begin(vertex->edges), end(vertex->edges));
+        for (Edge* edge : vertex->twin->edges)
         {
-            assert(Vertex::marked.empty());
-
-            int total_reward = 0;
-            bool changed = true;
-
-            while (changed)
-            {
-                changed = false;
-
-                for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
-                {
-                    Vertex* vertex = &full_vertex.forward;
-
-                    if (not vertex->edges.empty())
-                    {
-                        assert(vertex->edges.size() == vertex->location->workers_required);
-                        const int reward = scorers::removal_reward(vertex); // NOTE: this reward is customization point
-
-                        // NOTE: this condition is customization point (e.g. choose temperature).
-                        if (reward >= 0)
-                        {
-                            full_vertex.mark_recursively();
-                            total_reward += reward;
-                            graph.cut(vertex); // NOTE: recalculating assignment twice here, but it doesn't really matter
-                            changed = true;
-                            assert(vertex->edges.empty());
-                        }
-                    }
-                }
-            }
-
-            Vertex::recalculate_all_marked();
-
-            return total_reward;
+            edge_set.insert(edge->twin);
         }
     }
 
@@ -2092,6 +2065,81 @@ inline namespace solvers
             Vertex::unmark_all();
         }
     }
+
+    void edge_edge_optimizer(Graph& graph, Vertex* vertex)
+    {
+        std::unordered_set<Edge*> edges_to_optimize;
+        collect_edges(edges_to_optimize, vertex);
+        edge_edge_optimizer(graph, edges_to_optimize);
+    }
+
+    namespace ruin
+    {
+        template <class Strategies>
+        void reinsert_every_vertex(Graph& graph, Strategies& strategies, double p)
+        {
+            assert(Vertex::marked.empty());
+
+            std::bernoulli_distribution coin_flip(p);
+
+            for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
+            {
+                if (coin_flip(RANDOM_ENGINE))
+                {
+                    Vertex* vertex = &full_vertex.forward;
+
+                    if (not vertex->edges.empty())
+                    {
+                        assert(vertex->edges.size() == vertex->location->workers_required);
+                        full_vertex.mark_recursively();
+                        graph.cut(vertex);
+                        assert(vertex->edges.empty());
+                        Vertex::recalculate_all_marked();
+                        strategies.insert(graph, vertex);
+                        edge_edge_optimizer(graph, vertex);
+                    }
+                }
+            }
+        }
+
+        int remove_unprofitable_orders(Graph& graph)
+        {
+            assert(Vertex::marked.empty());
+
+            int total_reward = 0;
+            bool changed = true;
+
+            while (changed)
+            {
+                changed = false;
+
+                for (FullVertex& full_vertex : skip<FullVertex>(2, graph.vertices))
+                {
+                    Vertex* vertex = &full_vertex.forward;
+
+                    if (not vertex->edges.empty())
+                    {
+                        assert(vertex->edges.size() == vertex->location->workers_required);
+                        const int reward = scorers::removal_reward(vertex); // NOTE: this reward is customization point
+
+                        // NOTE: this condition is customization point (e.g. choose temperature).
+                        if (reward >= 0)
+                        {
+                            full_vertex.mark_recursively();
+                            total_reward += reward;
+                            graph.cut(vertex); // NOTE: recalculating assignment twice here, but it doesn't really matter
+                            changed = true;
+                            assert(vertex->edges.empty());
+                        }
+                    }
+                }
+            }
+
+            Vertex::recalculate_all_marked();
+
+            return total_reward;
+        }
+    }
 }
 
 struct Processor
@@ -2113,7 +2161,7 @@ struct Processor
                     .select_edges = {
                         .min_reward_threshold = -10000,
                         .reward_percentile_cutoff = 1,
-                        .width = 10000,
+                        .width = 1000,
                         .max_eval_points = 140000,
                         .max_selections_to_consider = 1000
                     }
@@ -2123,18 +2171,21 @@ struct Processor
 
         generate_empty_routes(graph);
 
+        int i = 0;
         for (Vertex* order : strategies.choose_orders(graph))
         {
             assert(order->edges.empty());
             strategies.insert(graph, order);
-            std::unordered_set<Edge*> edges_to_optimize;
-            edges_to_optimize.insert(begin(order->edges), end(order->edges));
-            for (Edge* edge : order->twin->edges)
+            solvers::edge_edge_optimizer(graph, order);
+
+            if (i++ % 50 == 0)
             {
-                edges_to_optimize.insert(edge->twin);
+                solvers::ruin::reinsert_every_vertex(graph, strategies, 0.01);
             }
-            solvers::edge_edge_optimizer(graph, edges_to_optimize);
+
         }
+
+        solvers::ruin::reinsert_every_vertex(graph, strategies, 1);
 
         remove_empty_paths(graph);
     }
