@@ -1727,7 +1727,17 @@ inline namespace solvers
                                     .reward = {}
                                 };
 
-                                new_state.selection.swap_remove(i);
+                                for (size_t j = 0; j < new_state.selection.size;)
+                                {
+                                    if (new_state.selection[j] >= pos)
+                                    {
+                                        new_state.selection.swap_remove(j);
+                                    }
+                                    else
+                                    {
+                                        j += 1;
+                                    }
+                                }
 
                                 switch (greedy_add_to_selection(new_state))
                                 {
@@ -1763,7 +1773,6 @@ inline namespace solvers
                     return false;
                 }
 
-                // TODO: needs some tracing to understand if this effective or not.
                 Action greedy_add_to_selection(State& state)
                 {
                     EdgesSelection& selection = state.selection;
@@ -1980,9 +1989,9 @@ struct Processor
                     .select_edges = {
                         .min_reward_threshold = -10000,
                         .reward_percentile_cutoff = 1,
-                        .width = 16,
+                        .width = 60,
                         .max_eval_points = 140000,
-                        .max_selections_to_consider = 5
+                        .max_selections_to_consider = 100
                     }
                 }
             }
