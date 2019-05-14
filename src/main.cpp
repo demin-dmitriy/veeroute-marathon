@@ -17,6 +17,7 @@
 #include <queue>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
@@ -710,6 +711,11 @@ inline namespace graph
             #endif
             ;
 
+        int get_latest_depart_moment() const
+        {
+            return twin_moment(twin->earliest_arrive_moment);
+        }
+
         void update(Vertex* source);
         bool check_index() const;
     };
@@ -1339,6 +1345,40 @@ inline namespace graph
         }
 
         return output;
+    }
+
+    int calculate_reward(Graph& graph)
+    {
+        // It's not the most efficient implementation (because it doesn't memoize), but it will do for now.
+        std::vector<Moment> last_arrive_moment = calculate_true_last_arrive_moments(graph);
+
+        int total_time = 0;
+
+        for (const Edge* edge: graph.forward_start()->edges)
+        {
+            total_time -= edge->get_latest_depart_moment();
+        }
+
+        for (const Edge* edge: graph.backward_start()->edges)
+        {
+            total_time += std::max(edge->to->twin->location->time_window.from, last_arrive_moment[edge->to->location->index]) + edge->to->location->duration + distance(edge->to, graph.backward_start());
+        }
+
+        int workers_count = graph.forward_start()->edges.size();
+
+        int total_pay = 0;
+
+        for (const FullVertex& full_vertex : graph.vertices)
+        {
+            if (not full_vertex.forward.edges.empty())
+            {
+                const int d = full_vertex.forward.location->duration;
+                const int p = full_vertex.forward.location->workers_required;
+                total_pay += d * p * (p + 5);
+            }
+        }
+
+        return total_pay - 240 * workers_count - total_time;
     }
 
     struct ReachabilityTable
@@ -1986,7 +2026,10 @@ inline namespace solvers
             static inline const auto choose_orders = [](Graph& graph) -> std::vector<Vertex*>
             {
                 const Vector center = graph.forward_start()->location->point;
-                return get_sorted_unresolved_orders(graph, [center](const Vertex* x) { return 0.2 * x->location->time_window.from + 6 * x->location->workers_required + 2 * distance(center, x->location->point); });
+                return get_sorted_unresolved_orders(graph, [center](const Vertex* x)
+                {
+                    return 0.2 * x->location->time_window.from + 6 * x->location->workers_required + 2 * distance(center, x->location->point);
+                });
             };
 
             Inserter<InserterStrategies> insert;
@@ -2186,9 +2229,26 @@ struct Processor
             i += 1;
         }
 
+        remove_empty_paths(graph);
+
+        std::stringstream ss;
+
+        const int reward_before_reinsert = calculate_reward(graph);
+
+        ss << graph;
+
         solvers::ruin::reinsert_every_vertex(graph, strategies, 1);
 
-        remove_empty_paths(graph);
+        const int reward_after_reinsert = calculate_reward(graph);
+
+        if (reward_after_reinsert > reward_before_reinsert)
+        {
+            std::cout << graph;
+        }
+        else
+        {
+            std::cout << ss.rdbuf();
+        }
     }
 };
 
@@ -2260,7 +2320,7 @@ int main(int argc, char** argv)
         }
     #endif
 
-    std::cout << processor.graph;
+//    std::cout << processor.graph;
 
     #ifndef ONLINE_JUDGE
         if (report)
