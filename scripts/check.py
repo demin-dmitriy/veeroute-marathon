@@ -82,6 +82,7 @@ def main(argv):
     total_reward = 0
     total_worker_count = 0
     total_distance = 0
+    jobs_count = None
 
     for line in sys.stdin:
         m = LINE_REGEX.fullmatch(line)
@@ -102,6 +103,7 @@ def main(argv):
             total_reward -= 240
             total_reward += at_moment # At the 'end' we will subtract current_time
             total_worker_count += 1
+            jobs_count = 0
 
         elif kind == 'arrive':
             at_moment = int(m.group('arrive_at_moment'))
@@ -137,13 +139,16 @@ def main(argv):
             location.workers_count += 1
 
             current_time = end_moment
+            jobs_count += 1
 
         elif kind == 'end':
             ensure(current_location == 1)
             ensure(0 <= current_time <= 1000)
+            ensure(jobs_count > 0)
 
             total_reward -= current_time # See 'start'
 
+            jobs_count = None
             current_location = None
             current_time = None
 
