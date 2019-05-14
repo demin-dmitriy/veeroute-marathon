@@ -2178,11 +2178,12 @@ struct Processor
             strategies.insert(graph, order);
             solvers::edge_edge_optimizer(graph, order);
 
-            if (i++ % 50 == 0)
+            if ((i % 50 == 0 and i < 700) or i % 500 == 0)
             {
-                solvers::ruin::reinsert_every_vertex(graph, strategies, 0.01);
+                solvers::ruin::reinsert_every_vertex(graph, strategies, 1);
             }
 
+            i += 1;
         }
 
         solvers::ruin::reinsert_every_vertex(graph, strategies, 1);
