@@ -2238,6 +2238,7 @@ struct Processor
         ss << graph;
 
         solvers::ruin::reinsert_every_vertex(graph, strategies, 1);
+        remove_empty_paths(graph);
 
         const int reward_after_reinsert = calculate_reward(graph);
 
@@ -2249,6 +2250,7 @@ struct Processor
         {
             std::cout << ss.rdbuf();
         }
+
     }
 };
 
