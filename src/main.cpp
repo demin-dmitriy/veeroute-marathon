@@ -1986,7 +1986,7 @@ inline namespace solvers
             static inline const auto choose_orders = [](Graph& graph) -> std::vector<Vertex*>
             {
                 const Vector center = graph.forward_start()->location->point;
-                return get_sorted_unresolved_orders(graph, [center](const Vertex* x) { return 3 * x->location->workers_required + 1 * distance(center, x->location->point); });
+                return get_sorted_unresolved_orders(graph, [center](const Vertex* x) { return 0.2 * x->location->time_window.from + 6 * x->location->workers_required + 2 * distance(center, x->location->point); });
             };
 
             Inserter<InserterStrategies> insert;
